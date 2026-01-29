@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+from typing import Dict, List, Any
+from openai import OpenAI
+import re
+
+
+def make_client(api_key: str, base_url: str) -> OpenAI:
+    return OpenAI(api_key=api_key, base_url=base_url)
+
+
+def _extract_output_text(resp: Any) -> str:
+    txt = getattr(resp, "output_text", None)
+    if isinstance(txt, str) and txt.strip():
+        return txt.strip()
+
+    out = getattr(resp, "output", None) or []
+    parts: List[str] = []
+
+    for item in out:
+        if getattr(item, "type", None) == "message":
+            content = getattr(item, "content", None) or []
+            for c in content:
+                if getattr(c, "type", None) == "output_text":
+                    t = getattr(c, "text", "")
+                    if isinstance(t, str) and t.strip():
+                        parts.append(t.strip())
+
+                maybe_text = getattr(c, "value", None)
+                if isinstance(maybe_text, str) and maybe_text.strip():
+                    parts.append(maybe_text.strip())
+
+    return "\n".join(parts).strip()
+
+
+def _diag(resp: Any) -> str:
+    status = getattr(resp, "status", None)
+    incomplete_details = getattr(resp, "incomplete_details", None)
+    error = getattr(resp, "error", None)
+
+    pieces = []
+    if status:
+        pieces.append(f"status={status}")
+    if incomplete_details:
+        pieces.append(f"incomplete_details={incomplete_details}")
+    if error:
+        pieces.append(f"error={error}")
+    return ", ".join(pieces) if pieces else "no_diagnostics"
+
+
+def _sanitize_telegram_plain_text(s: str) -> str:
+    if not s:
+        return s
+
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", s)
+    s = s.replace("**", "").replace("__", "")
+    s = re.sub(r"(?m)^\s*\*\s+", "- ", s)
+    s = s.replace("```", "")
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+
+    # Remove an occasional "(пусто)" line for НЕ ОБРАБОТАНО block
+    s = re.sub(r"(?mi)^\s*\(пусто\)\s*$", "", s).strip()
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+
+    return s
+
+
+def summarize_email(
+    client: OpenAI,
+    model: str,
+    subject: str,
+    from_label: str,
+    body: str,
+    max_output_tokens: int,
+) -> str:
+    prompt = f"""
+Ты — помощник, делающий очень короткий TL;DR для рабочего письма.
+
+КРИТИЧНО:
+- Поле "From" используй РОВНО как дано (не сокращай, не убирай домен в скобках).
+- Не добавляй email/домен сам — бери только из поля From.
+
+Формат ответа:
+TL;DR: <1–2 предложения>
+Action: <очень коротко>   (только если есть явное действие/ожидание)
+
+Данные:
+From: {from_label}
+Subject: {subject}
+
+Текст письма:
+{body}
+""".strip()
+
+    resp = client.responses.create(
+        model=model,
+        input=prompt,
+        max_output_tokens=max_output_tokens,
+    )
+
+    text = _extract_output_text(resp)
+    if not text:
+        raise RuntimeError(f"Empty TLDR ({_diag(resp)})")
+
+    return _sanitize_telegram_plain_text(text)
+
+
+def build_digest(
+    client: OpenAI,
+    model: str,
+    items: List[Dict],
+    failed: List[Dict],
+    max_output_tokens: int,
+) -> str:
+    # Give the model structured cards with from_label already formatted as "Name (domain)"
+    lines: List[str] = []
+    for it in items:
+        lines.append(
+            f"- From: {it['from_label']}\n"
+            f"  Subject: {it['subject']}\n"
+            f"  TLDR: {it['tldr']}"
+        )
+
+    failed_lines: List[str] = []
+    for it in failed:
+        failed_lines.append(
+            f"- From: {it['from_label']}\n"
+            f"  Subject: {it['subject']}\n"
+            f"  Reason: {it.get('reason','LLM error')}"
+        )
+
+    prompt = f"""
+Сформируй Telegram-дайджест в виде ПРОСТОГО ТЕКСТА (PLAIN TEXT).
+КРИТИЧНО: НЕ используй markdown и спецсимволы форматирования (** * # _ `).
+
+КРИТИЧНО:
+- Строки "From" используй РОВНО как они переданы в карточках (там уже есть домен в скобках).
+- Не укорачивай и не удаляй "(domain)".
+
+Структура:
+
+СВОДКА:
+- 1–3 строки
+
+ТОП ТЕМЫ:
+1) ...
+2) ...
+3) ...
+
+ТЕМЫ:
+[Название темы 1]
+- From: ... : TL;DR (одна строка)
+- From: ... : TL;DR
+
+[Название темы 2]
+- ...
+
+НЕ ОБРАБОТАНО:
+- From: ... : Subject ...
+(показывай блок только если есть failed)
+
+Карточки писем:
+{chr(10).join(lines) if lines else "(нет)"}
+
+Ошибки:
+{chr(10).join(failed_lines) if failed_lines else "(нет)"}
+""".strip()
+
+    resp = client.responses.create(
+        model=model,
+        input=prompt,
+        max_output_tokens=max_output_tokens,
+    )
+
+    text = _extract_output_text(resp)
+    if not text:
+        raise RuntimeError(f"Empty DIGEST ({_diag(resp)})")
+
+    return _sanitize_telegram_plain_text(text)
