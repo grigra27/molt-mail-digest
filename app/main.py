@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 
 from config import load_config, Config
 from db import init_db, get_paused
@@ -9,11 +10,45 @@ from scheduler import make_scheduler, add_digest_jobs
 from digest import run_digest
 
 
+class RedactTelegramBotTokenFilter(logging.Filter):
+    """
+    Redacts Telegram bot token from URLs like:
+    https://api.telegram.org/bot<token>/method
+    """
+    _re = re.compile(r"(https://api\.telegram\.org/bot)(\d+:[A-Za-z0-9_-]+)(/)")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+
+        if msg:
+            redacted = self._re.sub(r"\1[REDACTED]\3", msg)
+            if redacted != msg:
+                # Overwrite message safely
+                record.msg = redacted
+                record.args = ()
+        return True
+
+
 def setup_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # 1) Redact Telegram token in ANY log line (including from httpx/httpcore libs)
+    logging.getLogger().addFilter(RedactTelegramBotTokenFilter())
+
+    # 2) Optional: reduce noisy HTTP client logs (prevents full URL logging)
+    # You can change WARNING -> ERROR if you want even less noise.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # Optional: python-telegram-bot can also be chatty depending on config
+    # Keep bot logs, but don't spam with low-level details
+    logging.getLogger("telegram").setLevel(logging.INFO)
 
 
 async def main_async():
