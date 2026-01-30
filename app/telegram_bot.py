@@ -66,6 +66,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"- folder: {cfg.imap_folder}\n"
         f"- schedule hours: {cfg.schedule_hours}\n"
         f"- llm: {cfg.llm_model}\n"
+        f"- extra 1"
     )
     await update.message.reply_text(msg, disable_web_page_preview=True)
 
