@@ -1,5 +1,5 @@
 import logging
-from telegram import Update
+from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, ContextTypes
 from config import Config
 from db import get_paused, set_paused, get_last_uid
@@ -116,6 +116,19 @@ async def cmd_digest_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    if not _is_allowed(update, cfg):
+        return
+    # TEMP: one-time cleanup command to remove legacy Reply Keyboard from the client UI.
+    # After this, the keyboard will stay hidden unless some code sends ReplyKeyboardMarkup again.
+    await update.message.reply_text(
+        "✅ Ок, старая клавиатура убрана.",
+        reply_markup=ReplyKeyboardRemove(),
+        disable_web_page_preview=True,
+    )
+
+
 async def send_to_owner(app: Application, cfg: Config, text: str) -> None:
     for chunk in _split_telegram_message(text):
         await app.bot.send_message(
@@ -133,5 +146,6 @@ def build_app(cfg: Config) -> Application:
     application.add_handler(CommandHandler("pause", cmd_pause))
     application.add_handler(CommandHandler("resume", cmd_resume))
     application.add_handler(CommandHandler("digest_now", cmd_digest_now))
+    application.add_handler(CommandHandler("cleanup", cmd_cleanup))
 
     return application

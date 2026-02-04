@@ -63,9 +63,12 @@ def _sanitize_telegram_plain_text(s: str) -> str:
     s = re.sub(r"(?mi)^\s*\(пусто\)\s*$", "", s)
     s = re.sub(r"\n{3,}", "\n\n", s).strip()
 
-    # If model accidentally outputs "ТОП ТЕМЫ" section, strip it (we don't need it)
-    # Remove block from "ТОП ТЕМЫ:" until next blank line + next header-ish.
-    s = re.sub(r"(?is)\nТОП\s+ТЕМЫ:\n.*?(?=\n[A-ZА-ЯЁ ]{3,}:\n|\nЗАЯВКИ:\n|\nПРОЧЕЕ:\n|\nТЕМЫ:\n|\Z)", "\n", s)
+    # If model still outputs labels like "TL;DR:" or "Action:", strip them
+    s = re.sub(r"(?mi)^\s*TL;DR:\s*", "", s)
+    s = re.sub(r"(?mi)^\s*Action:\s*.*$", "", s)
+    s = s.strip()
+
+    # One more collapse after removals
     s = re.sub(r"\n{3,}", "\n\n", s).strip()
 
     return s
@@ -80,16 +83,13 @@ def summarize_email(
     max_output_tokens: int,
 ) -> str:
     prompt = f"""
-Ты — помощник, делающий очень короткий TL;DR для рабочего письма.
+Сделай очень короткое содержание рабочего письма.
 
 КРИТИЧНО:
-- Поле "From" используй РОВНО как дано (не сокращай, не убирай домен в скобках).
-- Не добавляй email/домен сам — бери только из поля From.
+- Верни только ОДНУ строку (без переносов), 6–20 слов, по смыслу.
+- Не используй префиксы "TL;DR:", "Action:" и т.п.
 - Не используй markdown (** * # _ `).
-
-Формат ответа:
-TL;DR: <1–2 предложения>
-Action: <очень коротко>   (только если есть явное действие/ожидание)
+- Не добавляй того, чего нет в тексте.
 
 Данные:
 From: {from_label}
@@ -108,7 +108,12 @@ Subject: {subject}
     text = _extract_output_text(resp)
     if not text:
         raise RuntimeError(f"Empty TLDR ({_diag(resp)})")
-    return _sanitize_telegram_plain_text(text)
+
+    text = _sanitize_telegram_plain_text(text)
+
+    # Force single line
+    text = " ".join(text.split())
+    return text.strip()
 
 
 def build_digest(
@@ -120,63 +125,38 @@ def build_digest(
     max_output_tokens: int,
 ) -> str:
     """
-    Build final digest:
-    - Claims: already grouped by code (strict)
-    - Other: grouped by LLM into themes (since there are many)
-    - No "Top themes" block.
-    Output is plain text (no markdown).
+    Final digest:
+    - Claims: already grouped by code (strict, code-generated)
+    - Other: grouped by LLM into themes
+    - Plain text, no Top Themes, no subjects, no actions.
     """
 
-    # Prepare "claims" part as deterministic plain text with minimal LLM involvement.
-    # We will still ask LLM to:
-    # - make a short overall summary
-    # - group OTHER items into themes
-    # But claims listing should be preserved as-is.
+    # Claims block is deterministic, built in code.
     claims_blocks: List[str] = []
     for g in claim_groups:
         claim_id = g["claim_id"]
         items = g["items"] or []
         lines = []
         for it in items:
-            # keep compact; subject is optional, but useful sometimes. We'll keep it short.
-            subj = it.get("subject", "").strip()
-            tldr = it.get("tldr", "").strip()
-
-            # Optional: if subject is very long, truncate to avoid noise
-            if len(subj) > 120:
-                subj = subj[:120] + "…"
-
-            # One line per email
-            if subj:
-                lines.append(f"- {it['from_label']}: {tldr} (Subject: {subj})")
-            else:
-                lines.append(f"- {it['from_label']}: {tldr}")
-
+            # Format: "- Name (domain): +++ СОДЕРЖАНИЕ: ..."
+            lines.append(f"- {it['from_label']}: +++ СОДЕРЖАНИЕ: {it['tldr']}")
         claims_blocks.append(f"[{claim_id}]\n" + "\n".join(lines))
 
-    claims_text = "\n\n".join(claims_blocks) if claims_blocks else "(нет)"
+    claims_text = "\n\n".join(claims_blocks) if claims_blocks else "(нет данных)"
 
-    # Prepare OTHER items cards for LLM thematic grouping.
+    # OTHER items cards for LLM thematic grouping (compact, no subjects in output)
     other_cards: List[str] = []
     for it in other_items:
-        subj = (it.get("subject") or "").strip()
-        tldr = (it.get("tldr") or "").strip()
-        if len(subj) > 160:
-            subj = subj[:160] + "…"
         other_cards.append(
             f"- From: {it['from_label']}\n"
-            f"  Subject: {subj}\n"
-            f"  TLDR: {tldr}"
+            f"  Content: {it['tldr']}"
         )
 
     failed_cards: List[str] = []
     for it in failed:
-        subj = (it.get("subject") or "").strip()
-        if len(subj) > 160:
-            subj = subj[:160] + "…"
         failed_cards.append(
             f"- From: {it.get('from_label','unknown')}\n"
-            f"  Subject: {subj}\n"
+            f"  Subject: {(it.get('subject') or '').strip()}\n"
             f"  Reason: {it.get('reason','LLM error')}"
         )
 
@@ -184,18 +164,21 @@ def build_digest(
 Сформируй Telegram-дайджест в виде ПРОСТОГО ТЕКСТА (PLAIN TEXT).
 КРИТИЧНО: НЕ используй markdown и спецсимволы форматирования (** * # _ `).
 
-Цели:
-1) Сделай короткую СВОДКУ (1–3 строки) по всему объёму.
-2) Вставь блок ЗАЯВКИ (он уже подготовлен) — не меняй его структуру, не переставляй строки, не удаляй домены.
-3) Для блока ПРОЧЕЕ (письма без заявок) — сгруппируй по 3–8 темам и выведи компактно.
-4) Блок НЕ ОБРАБОТАНО показывай только если он не пуст.
+Нужно:
+1) СВОДКА (1–2 строки): сколько заявок и сколько прочих писем, общий смысл.
+2) Вставь блок ЗАЯВКИ ниже — НЕ меняй его, НЕ переставляй строки.
+3) Для ПРОЧЕЕ (письма без заявок) — сгруппируй по 3–8 темам.
+   Внутри темы каждая строка строго:
+   - <From>: +++ СОДЕРЖАНИЕ: <Content>
+4) Блок НЕ ОБРАБОТАНО показывай только если есть ошибки.
 
 КРИТИЧНО:
-- Строки "From" используй РОВНО как передано (там уже есть домен в скобках).
-- Не удаляй домены.
-- Блок "ТОП ТЕМЫ" НЕ НУЖЕН — не добавляй.
+- "From" используй РОВНО как дано.
+- Не добавляй Subject.
+- Не добавляй Action.
+- НЕ добавляй раздел "ТОП ТЕМЫ".
 
-Структура итогового текста (строго):
+Формат итогового текста:
 
 СВОДКА:
 - ...
@@ -205,7 +188,7 @@ def build_digest(
 
 ПРОЧЕЕ:
 [Тема 1]
-- <From>: <короткий TL;DR в одну строку>
+- From: ... : +++ СОДЕРЖАНИЕ: ...
 - ...
 
 [Тема 2]
@@ -213,10 +196,10 @@ def build_digest(
 
 НЕ ОБРАБОТАНО:
 - From: ... : Subject ...
-(только если есть ошибки)
+(только если есть)
 
-Данные для "ПРОЧЕЕ" (карточки):
-{chr(10).join(other_cards) if other_cards else "(нет)"}
+Данные для ПРОЧЕЕ:
+{chr(10).join(other_cards) if other_cards else "(нет данных)"}
 
 Ошибки:
 {chr(10).join(failed_cards) if failed_cards else "(нет)"}
