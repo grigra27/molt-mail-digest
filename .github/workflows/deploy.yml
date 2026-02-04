@@ -8,9 +8,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: SSH deploy
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -20,17 +17,20 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           script: |
             set -e
+
             cd ${{ secrets.VPS_PATH }}
+
+            # Clone if repo not present (SSH URL works for private repos)
             if [ ! -d .git ]; then
-              git clone --depth 1 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git .
-            else
-              git fetch --all
-              git reset --hard origin/main
+              git clone --depth 1 git@github.com:grigra27/molt-mail-digest.git .
             fi
 
-            # .env должен уже лежать на сервере локально
+            # Update to latest main
+            git fetch --all
+            git reset --hard origin/main
+
+            # .env must exist on the server
             test -f .env || (echo ".env not found on server" && exit 1)
 
-            docker compose pull || true
             docker compose up -d --build
             docker compose ps

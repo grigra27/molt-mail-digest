@@ -1,6 +1,6 @@
 import logging
-from typing import Dict, List, Tuple
-from urllib.parse import urlparse
+from typing import Dict, List, Tuple, Optional
+import re
 
 from config import Config
 from db import (
@@ -14,8 +14,12 @@ from email_parse import parse_email
 from cleaner import clean_email_text
 from llm import summarize_email, build_digest, make_client
 
-
 logger = logging.getLogger(__name__)
+
+# Claim pattern:
+# - exactly 5 digits (not part of longer number)
+# - optionally followed by up to 3 "-WORD" chunks (Cyrillic/Latin letters, 1..4 length each)
+CLAIM_RE = re.compile(r"(?<!\d)(\d{5}(?:-[A-Za-zА-Яа-яЁё]{1,4}){0,3})(?!\d)")
 
 
 def _email_domain(addr: str) -> str:
@@ -37,6 +41,22 @@ def _format_from_label(name: str, email_addr: str) -> str:
     return email_addr or "unknown"
 
 
+def _extract_claim(subject: str) -> Optional[str]:
+    """
+    Returns claim identifier string like:
+    - 20431-ЛТ-МСК
+    - 20390-ЛТ-АР
+    - 20434-ЛА-КЗ
+    - or just 20431
+    If none found -> None.
+    """
+    subj = subject or ""
+    m = CLAIM_RE.search(subj)
+    if not m:
+        return None
+    return m.group(1)
+
+
 def run_digest(cfg: Config) -> Tuple[str, int, int]:
     """
     Returns: (digest_text, emails_count, failed_count)
@@ -46,7 +66,11 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
     last_uid = get_last_uid()
     old_uidvalidity = get_uidvalidity() or ""
 
-    items: List[Dict] = []
+    # We will build:
+    # - claim_groups: claim_id -> list of items
+    # - other_items: list
+    claim_map: Dict[str, List[Dict]] = {}
+    other_items: List[Dict] = []
     failed: List[Dict] = []
 
     with ImapClient(cfg.imap_host, cfg.imap_port, cfg.imap_user, cfg.imap_password) as im:
@@ -71,19 +95,36 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
             cleaned = clean_email_text(pe.body_text, cfg.max_chars_per_email)
 
             from_label = _format_from_label(pe.from_name, pe.from_email)
+            subject = pe.subject or ""
+
+            claim_id = _extract_claim(subject)
+
             try:
                 tldr = summarize_email(
                     client=client,
                     model=cfg.llm_model,
-                    subject=pe.subject,
+                    subject=subject,
                     from_label=from_label,
                     body=cleaned,
                     max_output_tokens=cfg.summary_max_output_tokens,
                 )
-                items.append({"from_label": from_label, "subject": pe.subject, "tldr": tldr})
+
+                item = {
+                    "uid": uid,
+                    "from_label": from_label,
+                    "subject": subject,
+                    "tldr": tldr,
+                    "claim_id": claim_id,
+                }
+
+                if claim_id:
+                    claim_map.setdefault(claim_id, []).append(item)
+                else:
+                    other_items.append(item)
+
             except Exception as e:
                 logger.exception("LLM summarize failed for UID=%s", uid)
-                failed.append({"from_label": from_label, "subject": pe.subject, "reason": str(e)})
+                failed.append({"from_label": from_label, "subject": subject, "reason": str(e)})
 
             if uid > max_uid_processed:
                 max_uid_processed = uid
@@ -91,11 +132,33 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
         # MVP choice: even if LLM fails, we still advance (no reprocessing)
         set_last_uid(max_uid_processed)
 
+    # Sort within each claim group by UID ascending (older -> newer)
+    claim_groups: List[Dict] = []
+    for claim_id, items in claim_map.items():
+        items_sorted = sorted(items, key=lambda x: x["uid"])
+        last_uid_in_claim = items_sorted[-1]["uid"] if items_sorted else 0
+        claim_groups.append(
+            {
+                "claim_id": claim_id,
+                "items": items_sorted,
+                "last_uid": last_uid_in_claim,
+            }
+        )
+
+    # Sort claim groups by most recent activity (descending)
+    claim_groups.sort(key=lambda g: g["last_uid"], reverse=True)
+
+    # Sort "other" by UID ascending
+    other_items = sorted(other_items, key=lambda x: x["uid"])
+
     digest_text = build_digest(
         client=client,
         model=cfg.llm_model,
-        items=items,
+        claim_groups=claim_groups,
+        other_items=other_items,
         failed=failed,
         max_output_tokens=cfg.digest_max_output_tokens,
     )
-    return digest_text, len(items) + len(failed), len(failed)
+
+    total = sum(len(g["items"]) for g in claim_groups) + len(other_items) + len(failed)
+    return digest_text, total, len(failed)
