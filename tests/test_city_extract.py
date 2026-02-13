@@ -4,7 +4,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "app"))
 
 import unittest
 
-from city_extract import extract_city_block, extract_spb_vacancies
+from city_extract import extract_city_block, extract_company_name, extract_spb_vacancies
 
 
 SAMPLE = """Компания: Абсолют Страхование
@@ -28,6 +28,19 @@ SAMPLE = """Компания: Абсолют Страхование
 Ссылка: https://hh.ru/vacancy/130247778
 """
 
+WITH_BANNED = """Компания: Ренессанс cтрахование, Группа
+
+Санкт-Петербург
+1. Водитель персональный на автомобиле компании — 70000-70000 RUR
+Ссылка: https://hh.ru/vacancy/130207683
+
+2. Страховой агент в офис — 70000-100000 RUR
+Ссылка: https://hh.ru/vacancy/129721441
+
+3. Специалист по техническому сопровождению клиентов — ЗП не указана
+Ссылка: https://hh.ru/vacancy/129890898
+"""
+
 
 class CityExtractTests(unittest.TestCase):
     def test_extract_city_block(self):
@@ -36,12 +49,22 @@ class CityExtractTests(unittest.TestCase):
         self.assertIn("Главный специалист управления ипотечного страхования", block)
         self.assertNotIn("Нижний Новгород", block)
 
+    def test_extract_company_name(self):
+        company = extract_company_name(SAMPLE)
+        self.assertEqual(company, "Абсолют Страхование")
+
     def test_extract_spb_vacancies(self):
         items = extract_spb_vacancies(SAMPLE)
         self.assertEqual(len(items), 3)
         self.assertEqual(items[0].title, "Главный специалист управления ипотечного страхования")
         self.assertEqual(items[0].link, "https://hh.ru/vacancy/130176260")
+        self.assertEqual(items[0].company, "Абсолют Страхование")
         self.assertEqual(items[2].link, "https://hh.ru/vacancy/124635869")
+
+    def test_banned_keywords_filter(self):
+        items = extract_spb_vacancies(WITH_BANNED)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].title, "Специалист по техническому сопровождению клиентов")
 
     def test_no_spb_section(self):
         items = extract_spb_vacancies("Москва\n1. Role\nСсылка: https://hh.ru/vacancy/1")

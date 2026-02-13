@@ -52,14 +52,18 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int]:
                 if not text:
                     continue
 
-                vacancies = extract_spb_vacancies(text)
+                vacancies = extract_spb_vacancies(text, banned_keywords=cfg.telegram_vacancy_banned_words)
                 if not vacancies:
                     continue
 
                 matched_posts += 1
                 new_hits += 1
                 title = getattr(entity, "title", None) or channel_ref
-                lines.append(f"\nКанал: {title} | пост #{msg.id} | {_fmt_dt(msg.date)}")
+                company = vacancies[0].company if vacancies else ""
+                header = f"\nКанал: {title} | пост #{msg.id} | {_fmt_dt(msg.date)}"
+                if company:
+                    header += f" | Компания: {company}"
+                lines.append(header)
                 for idx, item in enumerate(vacancies, start=1):
                     lines.append(f"{idx}. {item.title}")
                     lines.append(f"   {item.link}")

@@ -32,6 +32,7 @@ class Config:
     telegram_user_session: str
     telegram_source_channels: list[str]
     telegram_source_fetch_limit: int
+    telegram_vacancy_banned_words: tuple[str, ...]
 
     # LLM (Groq/OpenAI-compatible)
     llm_api_key: str
@@ -73,6 +74,8 @@ def load_config() -> Config:
     telegram_user_session = _get_env("TELEGRAM_USER_SESSION", "")
     channels_raw = _get_env("TELEGRAM_SOURCE_CHANNELS", "")
     telegram_source_channels = [x.strip() for x in channels_raw.split(",") if x.strip()]
+    banned_words_raw = _get_env("TELEGRAM_VACANCY_BANNED_WORDS", "врач,водитель,агент,терапевт,диспетчер")
+    telegram_vacancy_banned_words = tuple(x.strip() for x in banned_words_raw.split(",") if x.strip())
 
     if telegram_user_enabled:
         if not telegram_user_api_id:
@@ -100,6 +103,7 @@ def load_config() -> Config:
         telegram_user_session=telegram_user_session,
         telegram_source_channels=telegram_source_channels,
         telegram_source_fetch_limit=int(_get_env("TELEGRAM_SOURCE_FETCH_LIMIT", "80")),
+        telegram_vacancy_banned_words=telegram_vacancy_banned_words,
 
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url,
