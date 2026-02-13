@@ -70,3 +70,15 @@ def get_uidvalidity() -> Optional[str]:
 
 def set_uidvalidity(v: str) -> None:
     kv_set("uidvalidity", v)
+
+
+def _channel_key(channel_id: str) -> str:
+    return f"tg_source_last_id:{channel_id}"
+
+
+def get_tg_source_last_id(channel_id: str) -> int:
+    return int(kv_get(_channel_key(channel_id)) or "0")
+
+
+def set_tg_source_last_id(channel_id: str, message_id: int) -> None:
+    kv_set(_channel_key(channel_id), str(message_id))
