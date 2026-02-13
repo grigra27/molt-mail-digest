@@ -9,6 +9,11 @@ def _get_env(name: str, default: str | None = None, required: bool = False) -> s
     return v  # type: ignore[return-value]
 
 
+def _get_bool(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or ("1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Config:
     imap_host: str
@@ -19,6 +24,15 @@ class Config:
 
     telegram_bot_token: str
     telegram_chat_id: int
+
+    # Telegram user-source (channels -> SPB vacancies)
+    telegram_user_enabled: bool
+    telegram_user_api_id: int
+    telegram_user_api_hash: str
+    telegram_user_session: str
+    telegram_source_channels: list[str]
+    telegram_source_fetch_limit: int
+    telegram_vacancy_banned_words: tuple[str, ...]
 
     # LLM (Groq/OpenAI-compatible)
     llm_api_key: str
@@ -54,6 +68,25 @@ def load_config() -> Config:
     llm_base_url = os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.groq.com/openai/v1"
     llm_model = os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or "llama-3.3-70b-versatile"
 
+    telegram_user_enabled = _get_bool("TELEGRAM_USER_ENABLED", False)
+    telegram_user_api_id = int(_get_env("TELEGRAM_USER_API_ID", "0"))
+    telegram_user_api_hash = _get_env("TELEGRAM_USER_API_HASH", "")
+    telegram_user_session = _get_env("TELEGRAM_USER_SESSION", "")
+    channels_raw = _get_env("TELEGRAM_SOURCE_CHANNELS", "")
+    telegram_source_channels = [x.strip() for x in channels_raw.split(",") if x.strip()]
+    banned_words_raw = _get_env("TELEGRAM_VACANCY_BANNED_WORDS", "врач,водитель,агент,терапевт,диспетчер")
+    telegram_vacancy_banned_words = tuple(x.strip() for x in banned_words_raw.split(",") if x.strip())
+
+    if telegram_user_enabled:
+        if not telegram_user_api_id:
+            raise RuntimeError("Missing required env var: TELEGRAM_USER_API_ID when TELEGRAM_USER_ENABLED=1")
+        if not telegram_user_api_hash:
+            raise RuntimeError("Missing required env var: TELEGRAM_USER_API_HASH when TELEGRAM_USER_ENABLED=1")
+        if not telegram_user_session:
+            raise RuntimeError("Missing required env var: TELEGRAM_USER_SESSION when TELEGRAM_USER_ENABLED=1")
+        if not telegram_source_channels:
+            raise RuntimeError("Missing required env var: TELEGRAM_SOURCE_CHANNELS when TELEGRAM_USER_ENABLED=1")
+
     return Config(
         imap_host=_get_env("IMAP_HOST", required=True),
         imap_port=int(_get_env("IMAP_PORT", "993")),
@@ -63,6 +96,14 @@ def load_config() -> Config:
 
         telegram_bot_token=_get_env("TELEGRAM_BOT_TOKEN", required=True),
         telegram_chat_id=int(_get_env("TELEGRAM_CHAT_ID", required=True)),
+
+        telegram_user_enabled=telegram_user_enabled,
+        telegram_user_api_id=telegram_user_api_id,
+        telegram_user_api_hash=telegram_user_api_hash,
+        telegram_user_session=telegram_user_session,
+        telegram_source_channels=telegram_source_channels,
+        telegram_source_fetch_limit=int(_get_env("TELEGRAM_SOURCE_FETCH_LIMIT", "80")),
+        telegram_vacancy_banned_words=telegram_vacancy_banned_words,
 
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url,
