@@ -1,6 +1,8 @@
 import logging
 from typing import Dict, List, Tuple, Optional
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from config import Config
 from db import (
@@ -8,6 +10,8 @@ from db import (
     set_last_uid,
     get_uidvalidity,
     set_uidvalidity,
+    add_daily_stats,
+    get_today_daily_stats,
 )
 from imap_client import ImapClient
 from email_parse import parse_email
@@ -80,6 +84,8 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
     claim_map: Dict[str, List[Dict]] = {}
     other_items: List[Dict] = []
     failed: List[Dict] = []
+    claim_deltas: Dict[str, int] = {}
+    other_delta = 0
 
     with ImapClient(cfg.imap_host, cfg.imap_port, cfg.imap_user, cfg.imap_password) as im:
         uidvalidity = im.select_folder(cfg.imap_folder)
@@ -105,6 +111,10 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
             from_label = _format_from_label(pe.from_name, pe.from_email)
             subject = pe.subject or ""
             claim_id = _extract_claim(subject)
+            if claim_id:
+                claim_deltas[claim_id] = claim_deltas.get(claim_id, 0) + 1
+            else:
+                other_delta += 1
 
             try:
                 content_line = summarize_email(
@@ -138,6 +148,12 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
 
         # MVP choice: even if LLM fails, we still advance (no reprocessing)
         set_last_uid(max_uid_processed)
+        add_daily_stats(
+            timezone=cfg.tz,
+            total_delta=len(uids),
+            other_delta=other_delta,
+            claim_deltas=claim_deltas,
+        )
 
     # Build claim groups sorted:
     claim_groups: List[Dict] = []
@@ -165,3 +181,24 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
 
     total = sum(len(g["items"]) for g in claim_groups) + len(other_items) + len(failed)
     return digest_text, total, len(failed)
+
+
+def build_daily_stats_text(cfg: Config) -> str:
+    stats = get_today_daily_stats(cfg.tz)
+    date_local = datetime.now(ZoneInfo(cfg.tz)).strftime("%d.%m.%Y")
+
+    lines: List[str] = [
+        f"СТАТИСТИКА ЗА ДЕНЬ ({date_local}):",
+        f"- Всего писем: {stats['total']}",
+    ]
+
+    claims: Dict[str, int] = stats.get("claims", {})
+    if claims:
+        lines.append("- По заявкам:")
+        for claim_id in sorted(claims.keys()):
+            lines.append(f"  • {claim_id}: {claims[claim_id]}")
+    else:
+        lines.append("- По заявкам: 0")
+
+    lines.append(f"- Прочие: {stats['other']}")
+    return "\n".join(lines)

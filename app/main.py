@@ -7,7 +7,7 @@ from config import load_config, Config
 from db import init_db, get_paused
 from telegram_bot import build_app, send_to_owner
 from scheduler import make_scheduler, add_digest_jobs
-from digest import run_digest
+from digest import run_digest, build_daily_stats_text
 
 
 class RedactTelegramBotTokenFilter(logging.Filter):
@@ -63,7 +63,9 @@ async def main_async():
 
     scheduler = make_scheduler(cfg.tz)
 
-    async def scheduled_digest_job():
+    last_digest_hour = max(cfg.schedule_hours) if cfg.schedule_hours else 18
+
+    async def scheduled_digest_job(run_hour: int):
         if get_paused():
             logging.getLogger(__name__).info("Paused; skipping scheduled digest.")
             return
@@ -71,6 +73,8 @@ async def main_async():
             text, total, failed = run_digest(cfg)
             await send_to_owner(app, cfg, text)
             await send_to_owner(app, cfg, f"Авто-дайджест отправлен. Писем: {total}, не обработано: {failed}.")
+            if run_hour == last_digest_hour:
+                await send_to_owner(app, cfg, build_daily_stats_text(cfg))
         except Exception as e:
             logging.getLogger(__name__).exception("Scheduled digest failed")
             await send_to_owner(app, cfg, f"Ошибка авто-дайджеста: {e}")
