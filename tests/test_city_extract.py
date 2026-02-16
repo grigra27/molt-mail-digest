@@ -41,6 +41,22 @@ WITH_BANNED = """Компания: Ренессанс cтрахование, Г�
 Ссылка: https://hh.ru/vacancy/129890898
 """
 
+WITH_MEDICAL_TITLES = """Компания: Страховая компания
+
+Санкт-Петербург
+1. Консультант страховой медицины — ЗП не указана
+Ссылка: https://hh.ru/vacancy/100000001
+
+2. Специалист по рассмотрению обращений граждан по вопросам оказания медицинской помощи — ЗП не указана
+Ссылка: https://hh.ru/vacancy/100000002
+
+3. Сотрудник контакт-центра СМО по обязательному медицинскому страхованию — ЗП не указана
+Ссылка: https://hh.ru/vacancy/100000003
+
+4. Специалист по сопровождению клиентов — ЗП не указана
+Ссылка: https://hh.ru/vacancy/100000004
+"""
+
 
 class CityExtractTests(unittest.TestCase):
     def test_extract_city_block(self):
@@ -65,6 +81,11 @@ class CityExtractTests(unittest.TestCase):
         items = extract_spb_vacancies(WITH_BANNED)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].title, "Специалист по техническому сопровождению клиентов")
+
+    def test_banned_keyword_filters_by_word_part(self):
+        items = extract_spb_vacancies(WITH_MEDICAL_TITLES, banned_keywords=("медицин",))
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].title, "Специалист по сопровождению клиентов")
 
     def test_no_spb_section(self):
         items = extract_spb_vacancies("Москва\n1. Role\nСсылка: https://hh.ru/vacancy/1")
