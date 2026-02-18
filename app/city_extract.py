@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass
 
 
-CITY_HEADER_RE = re.compile(r"^\s*([А-ЯЁA-Z][А-Яа-яЁёA-Za-z\- ]{1,60})\s*:??\s*$")
+CITY_HEADER_RE = re.compile(r"^\s*([А-ЯЁA-Z][А-Яа-яЁёA-Za-z\- ]{1,60})\s*:?\s*$")
 VACANCY_LINK_RE = re.compile(r"https?://(?:www\.)?hh\.ru/vacancy/\d+", re.IGNORECASE)
 COMPANY_RE = re.compile(r"^\s*Компания\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
 SPB_ALIASES = (
@@ -21,6 +21,12 @@ class VacancyItem:
     company: str = ""
 
 
+@dataclass(frozen=True)
+class VacancyParseResult:
+    selected_items: list[VacancyItem]
+    detected_items: int
+
+
 def _normalize_city(city: str) -> str:
     c = (city or "").strip().lower().replace("ё", "е")
     c = re.sub(r"\s+", " ", c)
@@ -33,8 +39,16 @@ def _normalize_wording(text: str) -> str:
     return t
 
 
+def _extract_city_from_header(line: str) -> str:
+    raw = (line or "").strip()
+    m = CITY_HEADER_RE.match(raw)
+    if m:
+        return _normalize_city(m.group(1))
+    return _normalize_city(raw.rstrip(":"))
+
+
 def is_spb_city_header(line: str) -> bool:
-    normalized = _normalize_city(line)
+    normalized = _extract_city_from_header(line)
     return normalized in SPB_ALIASES
 
 
@@ -59,13 +73,16 @@ def extract_city_block(text: str, target_city: str = "Санкт-Петербу�
     """
     lines = (text or "").splitlines()
     target = _normalize_city(target_city)
+    target_aliases = {target}
+    if target in SPB_ALIASES:
+        target_aliases.update(SPB_ALIASES)
 
     start = None
     for idx, raw in enumerate(lines):
         line = raw.strip()
         if not line:
             continue
-        if _normalize_city(line) == target:
+        if _extract_city_from_header(line) in target_aliases:
             start = idx
             break
 
@@ -79,13 +96,42 @@ def extract_city_block(text: str, target_city: str = "Санкт-Петербу�
             continue
         m = CITY_HEADER_RE.match(line)
         if m:
-            city_candidate = m.group(1).strip()
-            if _normalize_city(city_candidate) != target:
+            city_candidate = _normalize_city(m.group(1))
+            if city_candidate not in target_aliases:
                 end = idx
                 break
 
     block = "\n".join(lines[start:end]).strip()
     return block
+
+
+def parse_spb_vacancies(text: str, banned_keywords: tuple[str, ...] = DEFAULT_BANNED_KEYWORDS) -> VacancyParseResult:
+    """Parse SPB vacancies and return both detected and selected counts."""
+    block = extract_city_block(text, target_city="Санкт-Петербург")
+    if not block:
+        return VacancyParseResult(selected_items=[], detected_items=0)
+
+    company = extract_company_name(text)
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    selected_items: list[VacancyItem] = []
+    detected_items = 0
+
+    current_title = ""
+    for line in lines[1:]:  # skip city header
+        if re.match(r"^\d+\.\s+", line):
+            title = re.sub(r"^\d+\.\s+", "", line)
+            title = title.split(" — ")[0].strip()
+            current_title = title
+            continue
+
+        link_m = VACANCY_LINK_RE.search(line)
+        if link_m and current_title:
+            detected_items += 1
+            if not _is_banned_title(current_title, banned_keywords):
+                selected_items.append(VacancyItem(title=current_title, link=link_m.group(0), company=company))
+            current_title = ""
+
+    return VacancyParseResult(selected_items=selected_items, detected_items=detected_items)
 
 
 def extract_spb_vacancies(text: str, banned_keywords: tuple[str, ...] = DEFAULT_BANNED_KEYWORDS) -> list[VacancyItem]:
@@ -101,26 +147,4 @@ def extract_spb_vacancies(text: str, banned_keywords: tuple[str, ...] = DEFAULT_
 
     Banned keywords are applied to title in case-insensitive "contains" mode.
     """
-    block = extract_city_block(text, target_city="Санкт-Петербург")
-    if not block:
-        return []
-
-    company = extract_company_name(text)
-    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
-    items: list[VacancyItem] = []
-
-    current_title = ""
-    for line in lines[1:]:  # skip city header
-        if re.match(r"^\d+\.\s+", line):
-            title = re.sub(r"^\d+\.\s+", "", line)
-            title = title.split(" — ")[0].strip()
-            current_title = title
-            continue
-
-        link_m = VACANCY_LINK_RE.search(line)
-        if link_m and current_title:
-            if not _is_banned_title(current_title, banned_keywords):
-                items.append(VacancyItem(title=current_title, link=link_m.group(0), company=company))
-            current_title = ""
-
-    return items
+    return parse_spb_vacancies(text, banned_keywords=banned_keywords).selected_items
