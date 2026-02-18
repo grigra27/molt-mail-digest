@@ -4,7 +4,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "app"))
 
 import unittest
 
-from city_extract import extract_city_block, extract_company_name, extract_spb_vacancies
+from city_extract import extract_city_block, extract_company_name, extract_spb_vacancies, parse_spb_vacancies
 
 
 SAMPLE = """Компания: Абсолют Страхование
@@ -58,6 +58,22 @@ WITH_MEDICAL_TITLES = """Компания: Страховая компания
 """
 
 
+WITH_SPB_ALIAS = """Компания: Тест
+
+Москва:
+1. Аналитик — ЗП не указана
+Ссылка: https://hh.ru/vacancy/200000001
+
+СПБ:
+1. Backend разработчик — ЗП не указана
+Ссылка: https://hh.ru/vacancy/200000002
+
+Казань
+1. QA инженер — ЗП не указана
+Ссылка: https://hh.ru/vacancy/200000003
+"""
+
+
 class CityExtractTests(unittest.TestCase):
     def test_extract_city_block(self):
         block = extract_city_block(SAMPLE, target_city="Санкт-Петербург")
@@ -86,6 +102,18 @@ class CityExtractTests(unittest.TestCase):
         items = extract_spb_vacancies(WITH_MEDICAL_TITLES, banned_keywords=("медицин",))
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].title, "Специалист по сопровождению клиентов")
+
+
+    def test_extract_spb_vacancies_from_alias_header(self):
+        items = extract_spb_vacancies(WITH_SPB_ALIAS)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].title, "Backend разработчик")
+        self.assertEqual(items[0].link, "https://hh.ru/vacancy/200000002")
+
+    def test_parse_spb_vacancies_detected_and_selected(self):
+        result = parse_spb_vacancies(WITH_BANNED)
+        self.assertEqual(result.detected_items, 3)
+        self.assertEqual(len(result.selected_items), 1)
 
     def test_no_spb_section(self):
         items = extract_spb_vacancies("Москва\n1. Role\nСсылка: https://hh.ru/vacancy/1")
