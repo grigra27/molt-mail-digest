@@ -5,7 +5,7 @@ from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from city_extract import parse_spb_vacancies
+from city_extract import extract_inline_hh_links_from_entities, parse_spb_vacancies
 from config import Config
 from db import get_tg_source_last_id, set_tg_source_last_id
 
@@ -19,6 +19,19 @@ class ChannelRunStats:
     fetched_posts: int
     detected_vacancies: int
     selected_vacancies: int
+
+
+def format_channel_stats(channel_stats: list[ChannelRunStats]) -> str:
+    if not channel_stats:
+        return "Каналы: нет данных."
+
+    lines = ["Статистика по каналам:"]
+    for st in channel_stats:
+        lines.append(
+            f"- {st.channel_title} ({st.channel_ref}): постов просмотрено {st.fetched_posts}, "
+            f"вакансий отсмотрено {st.detected_vacancies}, выбрано {st.selected_vacancies}"
+        )
+    return "\n".join(lines)
 
 
 def _fmt_dt(dt: datetime | None) -> str:
@@ -64,7 +77,12 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
                 if not text:
                     continue
 
-                parse_result = parse_spb_vacancies(text, banned_keywords=cfg.telegram_vacancy_banned_words)
+                inline_title_links = extract_inline_hh_links_from_entities(text, getattr(msg, "entities", None))
+                parse_result = parse_spb_vacancies(
+                    text,
+                    banned_keywords=cfg.telegram_vacancy_banned_words,
+                    inline_title_links=inline_title_links,
+                )
                 detected_vacancies += parse_result.detected_items
 
                 vacancies = parse_result.selected_items
