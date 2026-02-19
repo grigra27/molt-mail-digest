@@ -52,6 +52,11 @@ def _extract_city_from_header(line: str) -> str:
     return _normalize_city(raw.rstrip(":"))
 
 
+def _is_city_header_line(line: str) -> bool:
+    raw = (line or "").strip()
+    return bool(CITY_HEADER_WITH_COUNT_RE.match(raw) or CITY_HEADER_RE.match(raw))
+
+
 def extract_inline_hh_links_from_entities(text: str, entities: list[object] | None) -> dict[str, str]:
     """Extract hidden HH links from Telegram entities keyed by normalized visible text."""
     if not text or not entities:
@@ -112,7 +117,7 @@ def extract_city_block(text: str, target_city: str = "Санкт-Петербу�
         line = raw.strip()
         if not line:
             continue
-        if _extract_city_from_header(line) in target_aliases:
+        if _is_city_header_line(line) and _extract_city_from_header(line) in target_aliases:
             start = idx
             break
 
@@ -124,9 +129,8 @@ def extract_city_block(text: str, target_city: str = "Санкт-Петербу�
         line = lines[idx].strip()
         if not line:
             continue
-        m = CITY_HEADER_RE.match(line)
-        if m:
-            city_candidate = _normalize_city(m.group(1))
+        if _is_city_header_line(line):
+            city_candidate = _extract_city_from_header(line)
             if city_candidate not in target_aliases:
                 end = idx
                 break

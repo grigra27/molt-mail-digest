@@ -86,6 +86,16 @@ WITH_COUNT_HEADER = """Санкт-Петербург (2)
 """
 
 
+WITH_COUNTED_MULTI_CITY = """Санкт-Петербург (1)
+1. SPB Вакансия — ЗП не указана
+Ссылка: https://hh.ru/vacancy/400000001
+
+Москва (1)
+1. Moscow Вакансия — ЗП не указана
+Ссылка: https://hh.ru/vacancy/400000002
+"""
+
+
 class CityExtractTests(unittest.TestCase):
     def test_extract_city_block(self):
         block = extract_city_block(SAMPLE, target_city="Санкт-Петербург")
@@ -149,6 +159,18 @@ class CityExtractTests(unittest.TestCase):
         entities = [_Entity(3, len("Специалист по документообороту"), "https://hh.ru/vacancy/300000001")]
         result = extract_inline_hh_links_from_entities(text, entities)
         self.assertEqual(result.get("специалист по документообороту"), "https://hh.ru/vacancy/300000001")
+
+    def test_counted_city_header_is_boundary_for_next_city(self):
+        block = extract_city_block(WITH_COUNTED_MULTI_CITY, target_city="Санкт-Петербург")
+        self.assertIn("SPB Вакансия", block)
+        self.assertNotIn("Москва (1)", block)
+        self.assertNotIn("Moscow Вакансия", block)
+
+    def test_parse_spb_vacancies_stops_on_counted_other_city_header(self):
+        result = parse_spb_vacancies(WITH_COUNTED_MULTI_CITY)
+        self.assertEqual(result.detected_items, 1)
+        self.assertEqual(len(result.selected_items), 1)
+        self.assertEqual(result.selected_items[0].link, "https://hh.ru/vacancy/400000001")
 
     def test_no_spb_section(self):
         items = extract_spb_vacancies("Москва\n1. Role\nСсылка: https://hh.ru/vacancy/1")
