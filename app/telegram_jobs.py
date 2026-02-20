@@ -171,6 +171,10 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
         lines.append("\nудаленная работа:")
         lines.extend(remote_lines)
 
+    if remote_lines:
+        lines.append("\nудаленная работа:")
+        lines.extend(remote_lines)
+
     return "\n".join(lines), matched_posts, channel_stats
 
 
