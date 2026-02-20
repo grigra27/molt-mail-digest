@@ -87,6 +87,19 @@ def set_tg_source_last_id(channel_id: str, message_id: int) -> None:
     kv_set(_channel_key(channel_id), str(message_id))
 
 
+
+
+def _house_chat_key(chat_id: str) -> str:
+    return f"tg_house_last_id:{chat_id}"
+
+
+def get_tg_house_last_id(chat_id: str) -> int:
+    return int(kv_get(_house_chat_key(chat_id)) or "0")
+
+
+def set_tg_house_last_id(chat_id: str, message_id: int) -> None:
+    kv_set(_house_chat_key(chat_id), str(message_id))
+
 def _today_key(timezone: str) -> str:
     return datetime.now(ZoneInfo(timezone)).date().isoformat()
 

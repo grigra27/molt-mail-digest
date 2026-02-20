@@ -101,11 +101,11 @@ async def main_async():
 
     scheduler.add_job(
         scheduled_spb_jobs_job,
-        trigger=CronTrigger(hour=19, minute=0, timezone="UTC"),
-        id="jobs_spb_1900_utc",
+        trigger=CronTrigger(hour=10, minute=0, timezone="UTC"),
+        id="jobs_spb_1000_utc",
         replace_existing=True,
     )
-    logging.getLogger(__name__).info("Scheduled SPB jobs digest at 19:00 UTC daily")
+    logging.getLogger(__name__).info("Scheduled SPB jobs digest at 10:00 UTC daily")
 
     scheduler.start()
 
