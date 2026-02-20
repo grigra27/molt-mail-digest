@@ -6,8 +6,10 @@ import re
 from config import load_config, Config
 from db import init_db, get_paused
 from telegram_bot import build_app, send_to_owner
+from telegram_jobs import format_channel_stats, run_spb_jobs_digest
 from scheduler import make_scheduler, add_digest_jobs
 from digest import run_digest, build_daily_stats_text
+from apscheduler.triggers.cron import CronTrigger
 
 
 class RedactTelegramBotTokenFilter(logging.Filter):
@@ -80,6 +82,31 @@ async def main_async():
             await send_to_owner(app, cfg, f"Ошибка авто-дайджеста: {e}")
 
     add_digest_jobs(scheduler, cfg.schedule_hours, scheduled_digest_job)
+
+    async def scheduled_spb_jobs_job():
+        if get_paused():
+            logging.getLogger(__name__).info("Paused; skipping scheduled SPB jobs digest.")
+            return
+        try:
+            text, matched_posts, channel_stats = await run_spb_jobs_digest(cfg)
+            await send_to_owner(app, cfg, text)
+            await send_to_owner(
+                app,
+                cfg,
+                f"Готово. Подходящих постов: {matched_posts}.\n{format_channel_stats(channel_stats)}",
+            )
+        except Exception as e:
+            logging.getLogger(__name__).exception("Scheduled SPB jobs digest failed")
+            await send_to_owner(app, cfg, f"Ошибка авто-сбора вакансий СПб: {e}")
+
+    scheduler.add_job(
+        scheduled_spb_jobs_job,
+        trigger=CronTrigger(hour=10, minute=0, timezone="UTC"),
+        id="jobs_spb_1000_utc",
+        replace_existing=True,
+    )
+    logging.getLogger(__name__).info("Scheduled SPB jobs digest at 10:00 UTC daily")
+
     scheduler.start()
 
     # Start bot (long polling)
