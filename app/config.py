@@ -33,6 +33,7 @@ class Config:
     telegram_source_channels: list[str]
     telegram_source_fetch_limit: int
     telegram_vacancy_banned_words: tuple[str, ...]
+    telegram_house_chats: list[tuple[str, str]]
 
     # LLM (Groq/OpenAI-compatible)
     llm_api_key: str
@@ -76,6 +77,24 @@ def load_config() -> Config:
     telegram_source_channels = [x.strip() for x in channels_raw.split(",") if x.strip()]
     banned_words_raw = _get_env("TELEGRAM_VACANCY_BANNED_WORDS", "врач,водитель,агент,терапевт,диспетчер")
     telegram_vacancy_banned_words = tuple(x.strip() for x in banned_words_raw.split(",") if x.strip())
+    house_chats_raw = _get_env("TELEGRAM_HOUSE_CHATS", "")
+    telegram_house_chats: list[tuple[str, str]] = []
+    for item in house_chats_raw.split(";"):
+        part = item.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise RuntimeError(
+                "Invalid TELEGRAM_HOUSE_CHATS format. Use 'Дом 1=@chat_1;Дом 2=@chat_2'"
+            )
+        house_name, chat_ref = part.split("=", 1)
+        house_name = house_name.strip()
+        chat_ref = chat_ref.strip()
+        if not house_name or not chat_ref:
+            raise RuntimeError(
+                "Invalid TELEGRAM_HOUSE_CHATS item. Use non-empty 'Имя дома=chat_ref'"
+            )
+        telegram_house_chats.append((house_name, chat_ref))
 
     if telegram_user_enabled:
         if not telegram_user_api_id:
@@ -104,6 +123,7 @@ def load_config() -> Config:
         telegram_source_channels=telegram_source_channels,
         telegram_source_fetch_limit=int(_get_env("TELEGRAM_SOURCE_FETCH_LIMIT", "80")),
         telegram_vacancy_banned_words=telegram_vacancy_banned_words,
+        telegram_house_chats=telegram_house_chats,
 
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url,
