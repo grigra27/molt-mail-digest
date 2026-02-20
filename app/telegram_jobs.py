@@ -17,6 +17,8 @@ from llm import make_client, summarize_house_chat_messages
 
 logger = logging.getLogger(__name__)
 
+MAX_TELEGRAM_SOURCE_FETCH_LIMIT = 300
+
 
 @dataclass(frozen=True)
 class ChannelRunStats:
@@ -71,6 +73,7 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
         return "Источник Telegram-каналов отключён (TELEGRAM_USER_ENABLED=0).", 0, []
 
     client = TelegramClient(StringSession(cfg.telegram_user_session), cfg.telegram_user_api_id, cfg.telegram_user_api_hash)
+    fetch_limit = _effective_source_fetch_limit(cfg.telegram_source_fetch_limit)
 
     lines: list[str] = ["Вакансии Санкт-Петербурга из Telegram-каналов:"]
     remote_lines: list[str] = []
@@ -87,7 +90,7 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
             channel_title = getattr(entity, "title", None) or channel_ref
             last_id = get_tg_source_last_id(channel_id)
 
-            msgs = await client.get_messages(entity, limit=cfg.telegram_source_fetch_limit, min_id=last_id)
+            msgs = await client.get_messages(entity, limit=fetch_limit, min_id=last_id)
 
             max_seen = last_id
             new_hits = 0
@@ -159,8 +162,10 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
                 max_seen,
             )
 
+    stats_block = format_channel_stats(channel_stats)
+
     if matched_posts == 0:
-        return "В новых постах по выбранным каналам вакансий СПб не найдено.", 0, channel_stats
+        return f"В новых постах по выбранным каналам вакансий СПб не найдено.\n\n{stats_block}", 0, channel_stats
 
     if remote_lines:
         lines.append("\nудаленная работа:")

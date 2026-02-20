@@ -131,13 +131,12 @@ async def cmd_jobs_spb_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Ищу вакансии СПб в Telegram-каналах…", disable_web_page_preview=True)
     try:
-        text, matched_posts, channel_stats = await run_spb_jobs_digest(cfg)
+        text, matched_posts, _channel_stats = await run_spb_jobs_digest(cfg)
         for chunk in _split_telegram_message(text):
             await update.message.reply_text(chunk, disable_web_page_preview=True)
 
-        stats_text = format_channel_stats(channel_stats)
         await update.message.reply_text(
-            f"Готово. Подходящих постов: {matched_posts}.\n{stats_text}",
+            f"Готово. Подходящих постов: {matched_posts}.",
             disable_web_page_preview=True,
         )
     except Exception as e:
