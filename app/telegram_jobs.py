@@ -5,11 +5,19 @@ from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from city_extract import extract_inline_hh_links_from_entities, parse_remote_vacancies, parse_spb_vacancies
+from city_extract import extract_inline_hh_links_from_entities, parse_spb_vacancies
 from config import Config
-from db import get_tg_source_last_id, set_tg_source_last_id
+from db import (
+    get_tg_house_last_id,
+    get_tg_source_last_id,
+    set_tg_house_last_id,
+    set_tg_source_last_id,
+)
+from llm import make_client, summarize_house_chat_messages
 
 logger = logging.getLogger(__name__)
+
+MAX_TELEGRAM_SOURCE_FETCH_LIMIT = 300
 
 
 @dataclass(frozen=True)
@@ -21,13 +29,12 @@ class ChannelRunStats:
     selected_vacancies: int
 
 
-def _effective_source_fetch_limit(raw_limit: int) -> int:
-    """Return a safe positive fetch limit for Telegram history requests."""
-    try:
-        limit = int(raw_limit)
-    except (TypeError, ValueError):
-        return 80
-    return limit if limit > 0 else 80
+@dataclass(frozen=True)
+class HouseChatRunStats:
+    house_name: str
+    chat_ref: str
+    chat_title: str
+    fetched_messages: int
 
 
 def format_channel_stats(channel_stats: list[ChannelRunStats]) -> str:
@@ -43,6 +50,18 @@ def format_channel_stats(channel_stats: list[ChannelRunStats]) -> str:
     return "\n".join(lines)
 
 
+def format_house_chat_stats(chat_stats: list[HouseChatRunStats]) -> str:
+    if not chat_stats:
+        return "Чаты домов: нет данных."
+
+    lines = ["Статистика по чатам домов:"]
+    for st in chat_stats:
+        lines.append(
+            f"- {st.house_name} ({st.chat_title}, {st.chat_ref}): сообщений просмотрено {st.fetched_messages}"
+        )
+    return "\n".join(lines)
+
+
 def _fmt_dt(dt: datetime | None) -> str:
     if not dt:
         return "unknown-date"
@@ -54,6 +73,7 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
         return "Источник Telegram-каналов отключён (TELEGRAM_USER_ENABLED=0).", 0, []
 
     client = TelegramClient(StringSession(cfg.telegram_user_session), cfg.telegram_user_api_id, cfg.telegram_user_api_hash)
+    fetch_limit = _effective_source_fetch_limit(cfg.telegram_source_fetch_limit)
 
     lines: list[str] = ["Вакансии Санкт-Петербурга из Telegram-каналов:"]
     remote_lines: list[str] = []
@@ -70,7 +90,6 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
             channel_title = getattr(entity, "title", None) or channel_ref
             last_id = get_tg_source_last_id(channel_id)
 
-            fetch_limit = _effective_source_fetch_limit(cfg.telegram_source_fetch_limit)
             msgs = await client.get_messages(entity, limit=fetch_limit, min_id=last_id)
 
             max_seen = last_id
@@ -89,17 +108,12 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
                     continue
 
                 inline_title_links = extract_inline_hh_links_from_entities(text, getattr(msg, "entities", None))
-                spb_result = parse_spb_vacancies(
+                parse_result = parse_spb_vacancies(
                     text,
                     banned_keywords=cfg.telegram_vacancy_banned_words,
                     inline_title_links=inline_title_links,
                 )
-                remote_result = parse_remote_vacancies(
-                    text,
-                    banned_keywords=cfg.telegram_vacancy_banned_words,
-                    inline_title_links=inline_title_links,
-                )
-                detected_vacancies += spb_result.detected_items + remote_result.detected_items
+                detected_vacancies += parse_result.detected_items
 
                 spb_vacancies = spb_result.selected_items
                 remote_vacancies = remote_result.selected_items
@@ -148,11 +162,91 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
                 max_seen,
             )
 
+    stats_block = format_channel_stats(channel_stats)
+
     if matched_posts == 0:
-        return "В новых постах по выбранным каналам вакансий СПб не найдено.", 0, channel_stats
+        return f"В новых постах по выбранным каналам вакансий СПб не найдено.\n\n{stats_block}", 0, channel_stats
+
+    if remote_lines:
+        lines.append("\nудаленная работа:")
+        lines.extend(remote_lines)
 
     if remote_lines:
         lines.append("\nудаленная работа:")
         lines.extend(remote_lines)
 
     return "\n".join(lines), matched_posts, channel_stats
+
+
+async def run_house_chats_digest(cfg: Config) -> tuple[str, int, list[HouseChatRunStats]]:
+    if not cfg.telegram_user_enabled:
+        return "Источник Telegram-чатов отключён (TELEGRAM_USER_ENABLED=0).", 0, []
+    if not cfg.telegram_house_chats:
+        return "Не настроены домовые чаты (TELEGRAM_HOUSE_CHATS пуст).", 0, []
+
+    llm_client = make_client(cfg.llm_api_key, cfg.llm_base_url)
+    tg_client = TelegramClient(StringSession(cfg.telegram_user_session), cfg.telegram_user_api_id, cfg.telegram_user_api_hash)
+
+    lines: list[str] = ["Отчёт по домовым чатам:"]
+    total_new_messages = 0
+    chat_stats: list[HouseChatRunStats] = []
+
+    async with tg_client:
+        if not await tg_client.is_user_authorized():
+            raise RuntimeError("Telegram user session is not authorized. Recreate TELEGRAM_USER_SESSION.")
+
+        for house_name, chat_ref in cfg.telegram_house_chats:
+            entity = await tg_client.get_entity(chat_ref)
+            chat_id = str(entity.id)
+            chat_title = getattr(entity, "title", None) or house_name
+            last_id = get_tg_house_last_id(chat_id)
+
+            msgs = await tg_client.get_messages(entity, limit=cfg.telegram_source_fetch_limit, min_id=last_id)
+
+            max_seen = last_id
+            rendered_messages: list[str] = []
+
+            for msg in reversed(msgs):
+                if not msg or not getattr(msg, "id", None):
+                    continue
+                if msg.id > max_seen:
+                    max_seen = msg.id
+
+                text = (msg.message or "").strip()
+                if not text:
+                    continue
+
+                rendered_messages.append(f"[{_fmt_dt(msg.date)}] {text}")
+
+            set_tg_house_last_id(chat_id, max_seen)
+            total_new_messages += len(msgs)
+            chat_stats.append(
+                HouseChatRunStats(
+                    house_name=house_name,
+                    chat_ref=chat_ref,
+                    chat_title=chat_title,
+                    fetched_messages=len(msgs),
+                )
+            )
+
+            if rendered_messages:
+                messages_blob = "\n".join(rendered_messages)
+                summary = summarize_house_chat_messages(
+                    client=llm_client,
+                    model=cfg.llm_model,
+                    house_name=house_name,
+                    messages_blob=messages_blob,
+                    max_output_tokens=cfg.summary_max_output_tokens,
+                )
+            else:
+                summary = "новых обсуждений нет"
+
+            lines.append(f"- {house_name}: {summary}")
+            logger.info(
+                "House chat %s processed: fetched_messages=%s, last_id=%s",
+                chat_ref,
+                len(msgs),
+                max_seen,
+            )
+
+    return "\n".join(lines), total_new_messages, chat_stats

@@ -9,7 +9,6 @@ from city_extract import (
     extract_company_name,
     extract_inline_hh_links_from_entities,
     extract_spb_vacancies,
-    parse_remote_vacancies,
     parse_spb_vacancies,
 )
 
@@ -97,18 +96,6 @@ WITH_COUNTED_MULTI_CITY = """Санкт-Петербург (1)
 """
 
 
-WITH_REMOTE_IN_MOSCOW = """Компания: Удаленка ООО
-
-Москва
-1. Python разработчик — удаленная работа, ЗП не указана
-Ссылка: https://hh.ru/vacancy/500000001
-
-Санкт-Петербург
-1. Аналитик — ЗП не указана
-Ссылка: https://hh.ru/vacancy/500000002
-"""
-
-
 class CityExtractTests(unittest.TestCase):
     def test_extract_city_block(self):
         block = extract_city_block(SAMPLE, target_city="Санкт-Петербург")
@@ -173,22 +160,6 @@ class CityExtractTests(unittest.TestCase):
         result = extract_inline_hh_links_from_entities(text, entities)
         self.assertEqual(result.get("специалист по документообороту"), "https://hh.ru/vacancy/300000001")
 
-    def test_extract_inline_hh_links_from_entities_with_emoji_utf16_offsets(self):
-        text = "🔥 1. Специалист по документообороту"
-        title = "Специалист по документообороту"
-
-        class _Entity:
-            def __init__(self, offset, length, url):
-                self.offset = offset
-                self.length = length
-                self.url = url
-
-        offset_utf16 = len("🔥 1. ".encode("utf-16-le")) // 2
-        length_utf16 = len(title.encode("utf-16-le")) // 2
-        entities = [_Entity(offset_utf16, length_utf16, "https://hh.ru/vacancy/300000001")]
-        result = extract_inline_hh_links_from_entities(text, entities)
-        self.assertEqual(result.get("специалист по документообороту"), "https://hh.ru/vacancy/300000001")
-
     def test_counted_city_header_is_boundary_for_next_city(self):
         block = extract_city_block(WITH_COUNTED_MULTI_CITY, target_city="Санкт-Петербург")
         self.assertIn("SPB Вакансия", block)
@@ -200,17 +171,6 @@ class CityExtractTests(unittest.TestCase):
         self.assertEqual(result.detected_items, 1)
         self.assertEqual(len(result.selected_items), 1)
         self.assertEqual(result.selected_items[0].link, "https://hh.ru/vacancy/400000001")
-
-    def test_remote_vacancy_is_ignored_in_spb_and_selected_in_remote(self):
-        spb = parse_spb_vacancies(WITH_REMOTE_IN_MOSCOW)
-        self.assertEqual(spb.detected_items, 1)
-        self.assertEqual(len(spb.selected_items), 1)
-        self.assertEqual(spb.selected_items[0].link, "https://hh.ru/vacancy/500000002")
-
-        remote = parse_remote_vacancies(WITH_REMOTE_IN_MOSCOW)
-        self.assertEqual(remote.detected_items, 1)
-        self.assertEqual(len(remote.selected_items), 1)
-        self.assertEqual(remote.selected_items[0].link, "https://hh.ru/vacancy/500000001")
 
     def test_no_spb_section(self):
         items = extract_spb_vacancies("Москва\n1. Role\nСсылка: https://hh.ru/vacancy/1")

@@ -63,20 +63,6 @@ def extract_inline_hh_links_from_entities(text: str, entities: list[object] | No
     if not text or not entities:
         return {}
 
-    utf16_unit_to_index: dict[int, int] = {}
-    utf16_pos = 0
-    for idx, ch in enumerate(text):
-        utf16_unit_to_index[utf16_pos] = idx
-        utf16_pos += 2 if ord(ch) > 0xFFFF else 1
-    utf16_unit_to_index[utf16_pos] = len(text)
-
-    def _utf16_slice(source: str, offset_utf16: int, length_utf16: int) -> str:
-        start = utf16_unit_to_index.get(offset_utf16)
-        end = utf16_unit_to_index.get(offset_utf16 + length_utf16)
-        if start is None or end is None:
-            return ""
-        return source[start:end]
-
     links_by_title: dict[str, str] = {}
     for entity in entities:
         url = getattr(entity, "url", "") or ""
@@ -88,7 +74,7 @@ def extract_inline_hh_links_from_entities(text: str, entities: list[object] | No
         if offset < 0 or length <= 0:
             continue
 
-        visible_text = _utf16_slice(text, offset, length).strip()
+        visible_text = text[offset : offset + length].strip()
         if not visible_text:
             continue
 
@@ -179,17 +165,14 @@ def parse_spb_vacancies(
     current_is_remote = False
     for line in lines[1:]:  # skip city header
         if re.match(r"^\d+\.\s+", line):
-            raw_title = re.sub(r"^\d+\.\s+", "", line)
-            current_is_remote = _is_remote_work_line(raw_title)
-            title = raw_title.split(" — ")[0].strip()
+            title = re.sub(r"^\d+\.\s+", "", line)
+            title = title.split(" — ")[0].strip()
             inline_link = inline_title_links.get(_normalize_wording(title))
             if inline_link:
-                if not current_is_remote:
-                    detected_items += 1
-                if not current_is_remote and not _is_banned_title(title, banned_keywords):
+                detected_items += 1
+                if not _is_banned_title(title, banned_keywords):
                     selected_items.append(VacancyItem(title=title, link=inline_link, company=company))
                 current_title = ""
-                current_is_remote = False
                 continue
             current_title = title
             continue
