@@ -5,7 +5,7 @@ from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from city_extract import parse_spb_vacancies
+from city_extract import extract_inline_hh_links_from_entities, parse_remote_vacancies, parse_spb_vacancies
 from config import Config
 from db import get_tg_source_last_id, set_tg_source_last_id
 
@@ -21,6 +21,28 @@ class ChannelRunStats:
     selected_vacancies: int
 
 
+def _effective_source_fetch_limit(raw_limit: int) -> int:
+    """Return a safe positive fetch limit for Telegram history requests."""
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return 80
+    return limit if limit > 0 else 80
+
+
+def format_channel_stats(channel_stats: list[ChannelRunStats]) -> str:
+    if not channel_stats:
+        return "Каналы: нет данных."
+
+    lines = ["Статистика по каналам:"]
+    for st in channel_stats:
+        lines.append(
+            f"- {st.channel_title} ({st.channel_ref}): постов просмотрено {st.fetched_posts}, "
+            f"вакансий отсмотрено {st.detected_vacancies}, выбрано {st.selected_vacancies}"
+        )
+    return "\n".join(lines)
+
+
 def _fmt_dt(dt: datetime | None) -> str:
     if not dt:
         return "unknown-date"
@@ -34,6 +56,7 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
     client = TelegramClient(StringSession(cfg.telegram_user_session), cfg.telegram_user_api_id, cfg.telegram_user_api_hash)
 
     lines: list[str] = ["Вакансии Санкт-Петербурга из Telegram-каналов:"]
+    remote_lines: list[str] = []
     matched_posts = 0
     channel_stats: list[ChannelRunStats] = []
 
@@ -47,7 +70,8 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
             channel_title = getattr(entity, "title", None) or channel_ref
             last_id = get_tg_source_last_id(channel_id)
 
-            msgs = await client.get_messages(entity, limit=cfg.telegram_source_fetch_limit, min_id=last_id)
+            fetch_limit = _effective_source_fetch_limit(cfg.telegram_source_fetch_limit)
+            msgs = await client.get_messages(entity, limit=fetch_limit, min_id=last_id)
 
             max_seen = last_id
             new_hits = 0
@@ -64,24 +88,45 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
                 if not text:
                     continue
 
-                parse_result = parse_spb_vacancies(text, banned_keywords=cfg.telegram_vacancy_banned_words)
-                detected_vacancies += parse_result.detected_items
+                inline_title_links = extract_inline_hh_links_from_entities(text, getattr(msg, "entities", None))
+                spb_result = parse_spb_vacancies(
+                    text,
+                    banned_keywords=cfg.telegram_vacancy_banned_words,
+                    inline_title_links=inline_title_links,
+                )
+                remote_result = parse_remote_vacancies(
+                    text,
+                    banned_keywords=cfg.telegram_vacancy_banned_words,
+                    inline_title_links=inline_title_links,
+                )
+                detected_vacancies += spb_result.detected_items + remote_result.detected_items
 
-                vacancies = parse_result.selected_items
-                if not vacancies:
+                spb_vacancies = spb_result.selected_items
+                remote_vacancies = remote_result.selected_items
+                if not spb_vacancies and not remote_vacancies:
                     continue
 
-                selected_vacancies += len(vacancies)
-                matched_posts += 1
+                selected_vacancies += len(spb_vacancies) + len(remote_vacancies)
                 new_hits += 1
-                company = vacancies[0].company if vacancies else ""
+                company = (spb_vacancies or remote_vacancies)[0].company if (spb_vacancies or remote_vacancies) else ""
                 header = f"\nКанал: {channel_title} | пост #{msg.id} | {_fmt_dt(msg.date)}"
                 if company:
                     header += f" | Компания: {company}"
-                lines.append(header)
-                for idx, item in enumerate(vacancies, start=1):
-                    lines.append(f"{idx}. {item.title}")
-                    lines.append(f"   {item.link}")
+
+                if spb_vacancies:
+                    matched_posts += 1
+                    lines.append(header)
+                    for idx, item in enumerate(spb_vacancies, start=1):
+                        lines.append(f"{idx}. {item.title}")
+                        lines.append(f"   {item.link}")
+
+                if remote_vacancies:
+                    if not spb_vacancies:
+                        matched_posts += 1
+                    remote_lines.append(header)
+                    for idx, item in enumerate(remote_vacancies, start=1):
+                        remote_lines.append(f"{idx}. {item.title}")
+                        remote_lines.append(f"   {item.link}")
 
             set_tg_source_last_id(channel_id, max_seen)
             channel_stats.append(
@@ -105,5 +150,9 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
 
     if matched_posts == 0:
         return "В новых постах по выбранным каналам вакансий СПб не найдено.", 0, channel_stats
+
+    if remote_lines:
+        lines.append("\nудаленная работа:")
+        lines.extend(remote_lines)
 
     return "\n".join(lines), matched_posts, channel_stats
