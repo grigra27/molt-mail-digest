@@ -218,3 +218,38 @@ def build_digest(
         raise RuntimeError(f"Empty digest ({_diag(resp)})")
 
     return _sanitize_telegram_plain_text(text)
+
+def summarize_house_chat_messages(
+    client: OpenAI,
+    model: str,
+    house_name: str,
+    messages_blob: str,
+    max_output_tokens: int,
+) -> str:
+    prompt = f"""
+Сделай короткую сводку обсуждений в домовом чате.
+
+КРИТИЧНО:
+- Верни только ОДНУ строку на русском языке, 8-30 слов.
+- Без markdown.
+- Только факты из сообщений, без выдумок.
+- Если сообщений нет или они пустые, верни: новых обсуждений нет.
+
+Дом: {house_name}
+
+Сообщения:
+{messages_blob}
+""".strip()
+
+    resp = client.responses.create(
+        model=model,
+        input=prompt,
+        max_output_tokens=max_output_tokens,
+    )
+
+    text = _extract_output_text(resp)
+    if not text:
+        raise RuntimeError(f"Empty house chat summary ({_diag(resp)})")
+
+    text = _sanitize_telegram_plain_text(text)
+    return " ".join(text.split()).strip()
