@@ -73,6 +73,7 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
     client = TelegramClient(StringSession(cfg.telegram_user_session), cfg.telegram_user_api_id, cfg.telegram_user_api_hash)
 
     lines: list[str] = ["Вакансии Санкт-Петербурга из Telegram-каналов:"]
+    remote_lines: list[str] = []
     matched_posts = 0
     channel_stats: list[ChannelRunStats] = []
 
@@ -111,21 +112,32 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
                 )
                 detected_vacancies += parse_result.detected_items
 
-                vacancies = parse_result.selected_items
-                if not vacancies:
+                spb_vacancies = spb_result.selected_items
+                remote_vacancies = remote_result.selected_items
+                if not spb_vacancies and not remote_vacancies:
                     continue
 
-                selected_vacancies += len(vacancies)
-                matched_posts += 1
+                selected_vacancies += len(spb_vacancies) + len(remote_vacancies)
                 new_hits += 1
-                company = vacancies[0].company if vacancies else ""
+                company = (spb_vacancies or remote_vacancies)[0].company if (spb_vacancies or remote_vacancies) else ""
                 header = f"\nКанал: {channel_title} | пост #{msg.id} | {_fmt_dt(msg.date)}"
                 if company:
                     header += f" | Компания: {company}"
-                lines.append(header)
-                for idx, item in enumerate(vacancies, start=1):
-                    lines.append(f"{idx}. {item.title}")
-                    lines.append(f"   {item.link}")
+
+                if spb_vacancies:
+                    matched_posts += 1
+                    lines.append(header)
+                    for idx, item in enumerate(spb_vacancies, start=1):
+                        lines.append(f"{idx}. {item.title}")
+                        lines.append(f"   {item.link}")
+
+                if remote_vacancies:
+                    if not spb_vacancies:
+                        matched_posts += 1
+                    remote_lines.append(header)
+                    for idx, item in enumerate(remote_vacancies, start=1):
+                        remote_lines.append(f"{idx}. {item.title}")
+                        remote_lines.append(f"   {item.link}")
 
             set_tg_source_last_id(channel_id, max_seen)
             channel_stats.append(
@@ -149,6 +161,10 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
 
     if matched_posts == 0:
         return "В новых постах по выбранным каналам вакансий СПб не найдено.", 0, channel_stats
+
+    if remote_lines:
+        lines.append("\nудаленная работа:")
+        lines.extend(remote_lines)
 
     return "\n".join(lines), matched_posts, channel_stats
 

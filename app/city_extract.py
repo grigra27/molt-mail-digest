@@ -13,6 +13,7 @@ SPB_ALIASES = (
     "питер",
 )
 DEFAULT_BANNED_KEYWORDS = ("врач", "водитель", "агент", "терапевт", "диспетчер")
+REMOTE_WORK_KEYWORDS = ("удаленная работа", "удалённая работа")
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,11 @@ def _is_banned_title(title: str, banned_keywords: tuple[str, ...]) -> bool:
     return any(_normalize_wording(w) in normalized_title for w in banned_keywords if w.strip())
 
 
+def _is_remote_work_line(text: str) -> bool:
+    normalized = _normalize_wording(text)
+    return any(k in normalized for k in REMOTE_WORK_KEYWORDS)
+
+
 def extract_city_block(text: str, target_city: str = "Санкт-Петербург") -> str:
     """
     Extracts a city section from a multi-city vacancy message.
@@ -156,6 +162,7 @@ def parse_spb_vacancies(
     inline_title_links = inline_title_links or {}
 
     current_title = ""
+    current_is_remote = False
     for line in lines[1:]:  # skip city header
         if re.match(r"^\d+\.\s+", line):
             title = re.sub(r"^\d+\.\s+", "", line)
@@ -172,10 +179,12 @@ def parse_spb_vacancies(
 
         link_m = VACANCY_LINK_RE.search(line)
         if link_m and current_title:
-            detected_items += 1
-            if not _is_banned_title(current_title, banned_keywords):
+            if not current_is_remote:
+                detected_items += 1
+            if not current_is_remote and not _is_banned_title(current_title, banned_keywords):
                 selected_items.append(VacancyItem(title=current_title, link=link_m.group(0), company=company))
             current_title = ""
+            current_is_remote = False
 
     return VacancyParseResult(selected_items=selected_items, detected_items=detected_items)
 
@@ -194,3 +203,50 @@ def extract_spb_vacancies(text: str, banned_keywords: tuple[str, ...] = DEFAULT_
     Banned keywords are applied to title in case-insensitive "contains" mode.
     """
     return parse_spb_vacancies(text, banned_keywords=banned_keywords).selected_items
+
+
+def parse_remote_vacancies(
+    text: str,
+    banned_keywords: tuple[str, ...] = DEFAULT_BANNED_KEYWORDS,
+    inline_title_links: dict[str, str] | None = None,
+) -> VacancyParseResult:
+    """Parse vacancies marked as remote work regardless of city section."""
+    if not text:
+        return VacancyParseResult(selected_items=[], detected_items=0)
+
+    inline_title_links = inline_title_links or {}
+    company = extract_company_name(text)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    selected_items: list[VacancyItem] = []
+    detected_items = 0
+    current_title = ""
+    current_is_remote = False
+
+    for line in lines:
+        if re.match(r"^\d+\.\s+", line):
+            raw_title = re.sub(r"^\d+\.\s+", "", line)
+            title = raw_title.split(" — ")[0].strip()
+            current_is_remote = _is_remote_work_line(raw_title)
+
+            inline_link = inline_title_links.get(_normalize_wording(title))
+            if inline_link and current_is_remote:
+                detected_items += 1
+                if not _is_banned_title(title, banned_keywords):
+                    selected_items.append(VacancyItem(title=title, link=inline_link, company=company))
+                current_title = ""
+                current_is_remote = False
+                continue
+
+            current_title = title
+            continue
+
+        link_m = VACANCY_LINK_RE.search(line)
+        if link_m and current_title and current_is_remote:
+            detected_items += 1
+            if not _is_banned_title(current_title, banned_keywords):
+                selected_items.append(VacancyItem(title=current_title, link=link_m.group(0), company=company))
+            current_title = ""
+            current_is_remote = False
+
+    return VacancyParseResult(selected_items=selected_items, detected_items=detected_items)
