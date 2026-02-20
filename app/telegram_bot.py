@@ -4,7 +4,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from config import Config
 from db import get_paused, set_paused, get_last_uid
 from digest import run_digest
-from telegram_jobs import format_channel_stats, run_spb_jobs_digest
+from telegram_jobs import (
+    format_channel_stats,
+    format_house_chat_stats,
+    run_house_chats_digest,
+    run_spb_jobs_digest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +148,29 @@ async def cmd_jobs_spb_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def cmd_house_chats_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    if not _is_allowed(update, cfg):
+        return
+
+    await update.message.reply_text("Собираю обновления из домовых чатов…", disable_web_page_preview=True)
+    try:
+        text, total_messages, chat_stats = await run_house_chats_digest(cfg)
+        for chunk in _split_telegram_message(text):
+            await update.message.reply_text(chunk, disable_web_page_preview=True)
+
+        await update.message.reply_text(
+            f"Готово. Новых сообщений: {total_messages}.\n{format_house_chat_stats(chat_stats)}",
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logger.exception("house_chats_now failed")
+        await update.message.reply_text(
+            f"Ошибка при сборе домовых чатов: {e}",
+            disable_web_page_preview=True,
+        )
+
+
 async def send_to_owner(app: Application, cfg: Config, text: str) -> None:
     for chunk in _split_telegram_message(text):
         await app.bot.send_message(
@@ -161,5 +189,6 @@ def build_app(cfg: Config) -> Application:
     application.add_handler(CommandHandler("resume", cmd_resume))
     application.add_handler(CommandHandler("digest_now", cmd_digest_now))
     application.add_handler(CommandHandler("jobs_spb_now", cmd_jobs_spb_now))
+    application.add_handler(CommandHandler("house_chats_now", cmd_house_chats_now))
 
     return application
