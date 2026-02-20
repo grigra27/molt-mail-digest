@@ -4,7 +4,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from config import Config
 from db import get_paused, set_paused, get_last_uid
 from digest import run_digest
-from telegram_jobs import run_house_chats_digest, run_spb_jobs_digest
+from telegram_jobs import (
+    format_channel_stats,
+    format_house_chat_stats,
+    run_house_chats_digest,
+    run_spb_jobs_digest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,12 +154,12 @@ async def cmd_house_chats_now(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text("Собираю обновления из домовых чатов…", disable_web_page_preview=True)
     try:
-        text, total_messages, _chat_stats = await run_house_chats_digest(cfg)
+        text, total_messages, chat_stats = await run_house_chats_digest(cfg)
         for chunk in _split_telegram_message(text):
             await update.message.reply_text(chunk, disable_web_page_preview=True)
 
         await update.message.reply_text(
-            f"Готово. Новых сообщений: {total_messages}.",
+            f"Готово. Новых сообщений: {total_messages}.\n{format_house_chat_stats(chat_stats)}",
             disable_web_page_preview=True,
         )
     except Exception as e:

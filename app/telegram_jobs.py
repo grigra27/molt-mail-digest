@@ -62,10 +62,6 @@ def format_house_chat_stats(chat_stats: list[HouseChatRunStats]) -> str:
     return "\n".join(lines)
 
 
-def _effective_source_fetch_limit(config_limit: int) -> int:
-    return max(1, min(int(config_limit), MAX_TELEGRAM_SOURCE_FETCH_LIMIT))
-
-
 def _fmt_dt(dt: datetime | None) -> str:
     if not dt:
         return "unknown-date"
@@ -80,6 +76,7 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
     fetch_limit = _effective_source_fetch_limit(cfg.telegram_source_fetch_limit)
 
     lines: list[str] = ["Вакансии Санкт-Петербурга из Telegram-каналов:"]
+    remote_lines: list[str] = []
     matched_posts = 0
     channel_stats: list[ChannelRunStats] = []
 
@@ -118,21 +115,32 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
                 )
                 detected_vacancies += parse_result.detected_items
 
-                vacancies = parse_result.selected_items
-                if not vacancies:
+                spb_vacancies = spb_result.selected_items
+                remote_vacancies = remote_result.selected_items
+                if not spb_vacancies and not remote_vacancies:
                     continue
 
-                selected_vacancies += len(vacancies)
-                matched_posts += 1
+                selected_vacancies += len(spb_vacancies) + len(remote_vacancies)
                 new_hits += 1
-                company = vacancies[0].company if vacancies else ""
+                company = (spb_vacancies or remote_vacancies)[0].company if (spb_vacancies or remote_vacancies) else ""
                 header = f"\nКанал: {channel_title} | пост #{msg.id} | {_fmt_dt(msg.date)}"
                 if company:
                     header += f" | Компания: {company}"
-                lines.append(header)
-                for idx, item in enumerate(vacancies, start=1):
-                    lines.append(f"{idx}. {item.title}")
-                    lines.append(f"   {item.link}")
+
+                if spb_vacancies:
+                    matched_posts += 1
+                    lines.append(header)
+                    for idx, item in enumerate(spb_vacancies, start=1):
+                        lines.append(f"{idx}. {item.title}")
+                        lines.append(f"   {item.link}")
+
+                if remote_vacancies:
+                    if not spb_vacancies:
+                        matched_posts += 1
+                    remote_lines.append(header)
+                    for idx, item in enumerate(remote_vacancies, start=1):
+                        remote_lines.append(f"{idx}. {item.title}")
+                        remote_lines.append(f"   {item.link}")
 
             set_tg_source_last_id(channel_id, max_seen)
             channel_stats.append(
@@ -159,8 +167,10 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
     if matched_posts == 0:
         return f"В новых постах по выбранным каналам вакансий СПб не найдено.\n\n{stats_block}", 0, channel_stats
 
-    lines.append("")
-    lines.append(stats_block)
+    if remote_lines:
+        lines.append("\nудаленная работа:")
+        lines.extend(remote_lines)
+
     return "\n".join(lines), matched_posts, channel_stats
 
 
@@ -172,7 +182,6 @@ async def run_house_chats_digest(cfg: Config) -> tuple[str, int, list[HouseChatR
 
     llm_client = make_client(cfg.llm_api_key, cfg.llm_base_url)
     tg_client = TelegramClient(StringSession(cfg.telegram_user_session), cfg.telegram_user_api_id, cfg.telegram_user_api_hash)
-    fetch_limit = _effective_source_fetch_limit(cfg.telegram_source_fetch_limit)
 
     lines: list[str] = ["Отчёт по домовым чатам:"]
     total_new_messages = 0
@@ -188,7 +197,7 @@ async def run_house_chats_digest(cfg: Config) -> tuple[str, int, list[HouseChatR
             chat_title = getattr(entity, "title", None) or house_name
             last_id = get_tg_house_last_id(chat_id)
 
-            msgs = await tg_client.get_messages(entity, limit=fetch_limit, min_id=last_id)
+            msgs = await tg_client.get_messages(entity, limit=cfg.telegram_source_fetch_limit, min_id=last_id)
 
             max_seen = last_id
             rendered_messages: list[str] = []
@@ -236,6 +245,4 @@ async def run_house_chats_digest(cfg: Config) -> tuple[str, int, list[HouseChatR
                 max_seen,
             )
 
-    lines.append("")
-    lines.append(format_house_chat_stats(chat_stats))
     return "\n".join(lines), total_new_messages, chat_stats
