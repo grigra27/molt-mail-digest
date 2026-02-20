@@ -5,7 +5,7 @@ from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from city_extract import extract_inline_hh_links_from_entities, parse_spb_vacancies
+from city_extract import extract_inline_hh_links_from_entities, parse_remote_vacancies, parse_spb_vacancies
 from config import Config
 from db import (
     get_tg_house_last_id,
@@ -18,6 +18,18 @@ from llm import make_client, summarize_house_chat_messages
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_SOURCE_FETCH_LIMIT = 300
+
+
+def _effective_source_fetch_limit(raw_limit: int, default_limit: int = 80) -> int:
+    try:
+        parsed_limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return default_limit
+
+    if parsed_limit <= 0:
+        return default_limit
+
+    return min(parsed_limit, MAX_TELEGRAM_SOURCE_FETCH_LIMIT)
 
 
 @dataclass(frozen=True)
@@ -113,9 +125,15 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
                     banned_keywords=cfg.telegram_vacancy_banned_words,
                     inline_title_links=inline_title_links,
                 )
+                remote_result = parse_remote_vacancies(
+                    text,
+                    banned_keywords=cfg.telegram_vacancy_banned_words,
+                    inline_title_links=inline_title_links,
+                )
                 detected_vacancies += parse_result.detected_items
+                detected_vacancies += remote_result.detected_items
 
-                spb_vacancies = spb_result.selected_items
+                spb_vacancies = parse_result.selected_items
                 remote_vacancies = remote_result.selected_items
                 if not spb_vacancies and not remote_vacancies:
                     continue
@@ -166,10 +184,6 @@ async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunSta
 
     if matched_posts == 0:
         return f"В новых постах по выбранным каналам вакансий СПб не найдено.\n\n{stats_block}", 0, channel_stats
-
-    if remote_lines:
-        lines.append("\nудаленная работа:")
-        lines.extend(remote_lines)
 
     if remote_lines:
         lines.append("\nудаленная работа:")
