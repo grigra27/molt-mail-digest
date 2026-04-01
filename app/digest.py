@@ -141,7 +141,10 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
 
             except Exception as e:
                 logger.exception("LLM summarize failed for UID=%s", uid)
-                failed.append({"from_label": from_label, "subject": subject, "reason": str(e)})
+                reason = str(e)
+                if len(reason) > 300:
+                    reason = reason[:300] + "…"
+                failed.append({"from_label": from_label, "subject": subject, "reason": reason})
 
             if uid > max_uid_processed:
                 max_uid_processed = uid
