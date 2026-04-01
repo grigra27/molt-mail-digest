@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Bot (local)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "main"],
+      "cwd": "app",
+      "port": null
+    },
+    {
+      "name": "Bot (Docker Compose)",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up", "--build"],
+      "port": null
+    }
+  ]
+}

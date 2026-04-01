@@ -151,16 +151,19 @@ def build_digest(
     for it in other_items:
         other_cards.append(f"- From: {it['from_label']}\n  Content: {it['content']}")
 
+    MAX_FAILED_IN_DIGEST = 20
     failed_cards: List[str] = []
-    for it in failed:
+    for it in failed[:MAX_FAILED_IN_DIGEST]:
         subj = (it.get("subject") or "").strip()
-        if len(subj) > 180:
-            subj = subj[:180] + "…"
+        if len(subj) > 120:
+            subj = subj[:120] + "…"
         failed_cards.append(
             f"- From: {it.get('from_label','unknown')}\n"
             f"  Subject: {subj}\n"
             f"  Reason: {it.get('reason','LLM error')}"
         )
+    if len(failed) > MAX_FAILED_IN_DIGEST:
+        failed_cards.append(f"... и ещё {len(failed) - MAX_FAILED_IN_DIGEST} необработанных")
 
     prompt = f"""
 Сформируй Telegram-дайджест в виде ПРОСТОГО ТЕКСТА (PLAIN TEXT).

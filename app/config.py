@@ -133,7 +133,7 @@ def load_config() -> Config:
         schedule_hours=schedule_hours,
 
         max_emails_per_run=int(_get_env("MAX_EMAILS_PER_RUN", "80")),
-        max_chars_per_email=int(_get_env("MAX_CHARS_PER_EMAIL", "20000")),
+        max_chars_per_email=int(_get_env("MAX_CHARS_PER_EMAIL", "3000")),
         summary_max_output_tokens=int(_get_env("SUMMARY_MAX_OUTPUT_TOKENS", "220")),
         digest_max_output_tokens=int(_get_env("DIGEST_MAX_OUTPUT_TOKENS", "900")),
 
