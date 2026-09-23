@@ -34,6 +34,7 @@ class Config:
     telegram_source_fetch_limit: int
     telegram_vacancy_banned_words: tuple[str, ...]
     telegram_house_chats: list[tuple[str, str]]
+    max_chars_per_house_chat_batch: int
 
     # LLM (Groq/OpenAI-compatible)
     llm_api_key: str
@@ -124,6 +125,7 @@ def load_config() -> Config:
         telegram_source_fetch_limit=int(_get_env("TELEGRAM_SOURCE_FETCH_LIMIT", "80")),
         telegram_vacancy_banned_words=telegram_vacancy_banned_words,
         telegram_house_chats=telegram_house_chats,
+        max_chars_per_house_chat_batch=int(_get_env("MAX_CHARS_PER_HOUSE_CHAT_BATCH", "3000")),
 
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url,

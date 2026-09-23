@@ -80,6 +80,26 @@ def _fmt_dt(dt: datetime | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
+def _cap_messages_blob(rendered_messages: list[str], max_chars: int) -> str:
+    """
+    Keeps as many of the most recent messages as fit in max_chars
+    (oldest ones are dropped first), preserving chronological order
+    in the output. Without this cap a chat with a large backlog can
+    blow past the LLM provider's per-request token limit (e.g. Groq's
+    413 "Request too large" on tokens-per-minute).
+    """
+    kept: list[str] = []
+    total = 0
+    for msg in reversed(rendered_messages):
+        length = len(msg) + (1 if kept else 0)
+        if total + length > max_chars and kept:
+            break
+        kept.append(msg)
+        total += length
+    kept.reverse()
+    return "\n".join(kept)
+
+
 async def run_spb_jobs_digest(cfg: Config) -> tuple[str, int, list[ChannelRunStats]]:
     if not cfg.telegram_user_enabled:
         return "Источник Telegram-каналов отключён (TELEGRAM_USER_ENABLED=0).", 0, []
@@ -210,57 +230,64 @@ async def run_house_chats_digest(cfg: Config) -> tuple[str, int, list[HouseChatR
             raise RuntimeError("Telegram user session is not authorized. Recreate TELEGRAM_USER_SESSION.")
 
         for house_name, chat_ref in cfg.telegram_house_chats:
-            entity = await tg_client.get_entity(chat_ref)
-            chat_id = str(entity.id)
-            chat_title = getattr(entity, "title", None) or house_name
-            last_id = get_tg_house_last_id(chat_id)
+            try:
+                entity = await tg_client.get_entity(chat_ref)
+                chat_id = str(entity.id)
+                chat_title = getattr(entity, "title", None) or house_name
+                last_id = get_tg_house_last_id(chat_id)
 
-            msgs = await tg_client.get_messages(entity, limit=cfg.telegram_source_fetch_limit, min_id=last_id)
+                msgs = await tg_client.get_messages(entity, limit=cfg.telegram_source_fetch_limit, min_id=last_id)
 
-            max_seen = last_id
-            rendered_messages: list[str] = []
+                max_seen = last_id
+                rendered_messages: list[str] = []
 
-            for msg in reversed(msgs):
-                if not msg or not getattr(msg, "id", None):
-                    continue
-                if msg.id > max_seen:
-                    max_seen = msg.id
+                for msg in reversed(msgs):
+                    if not msg or not getattr(msg, "id", None):
+                        continue
+                    if msg.id > max_seen:
+                        max_seen = msg.id
 
-                text = (msg.message or "").strip()
-                if not text:
-                    continue
+                    text = (msg.message or "").strip()
+                    if not text:
+                        continue
 
-                rendered_messages.append(f"[{_fmt_dt(msg.date)}] {text}")
+                    rendered_messages.append(f"[{_fmt_dt(msg.date)}] {text}")
 
-            set_tg_house_last_id(chat_id, max_seen)
-            total_new_messages += len(msgs)
-            chat_stats.append(
-                HouseChatRunStats(
-                    house_name=house_name,
-                    chat_ref=chat_ref,
-                    chat_title=chat_title,
-                    fetched_messages=len(msgs),
+                if rendered_messages:
+                    messages_blob = _cap_messages_blob(rendered_messages, cfg.max_chars_per_house_chat_batch)
+                    summary = summarize_house_chat_messages(
+                        client=llm_client,
+                        model=cfg.llm_model,
+                        house_name=house_name,
+                        messages_blob=messages_blob,
+                        max_output_tokens=cfg.summary_max_output_tokens,
+                    )
+                else:
+                    summary = "новых обсуждений нет"
+
+                # Only advance last_id once the summary actually succeeded, so a
+                # failed chat gets retried (not silently skipped) next run.
+                set_tg_house_last_id(chat_id, max_seen)
+                total_new_messages += len(msgs)
+                chat_stats.append(
+                    HouseChatRunStats(
+                        house_name=house_name,
+                        chat_ref=chat_ref,
+                        chat_title=chat_title,
+                        fetched_messages=len(msgs),
+                    )
                 )
-            )
-
-            if rendered_messages:
-                messages_blob = "\n".join(rendered_messages)
-                summary = summarize_house_chat_messages(
-                    client=llm_client,
-                    model=cfg.llm_model,
-                    house_name=house_name,
-                    messages_blob=messages_blob,
-                    max_output_tokens=cfg.summary_max_output_tokens,
+                lines.append(f"- {house_name}: {summary}")
+                logger.info(
+                    "House chat %s processed: fetched_messages=%s, last_id=%s",
+                    chat_ref,
+                    len(msgs),
+                    max_seen,
                 )
-            else:
-                summary = "новых обсуждений нет"
-
-            lines.append(f"- {house_name}: {summary}")
-            logger.info(
-                "House chat %s processed: fetched_messages=%s, last_id=%s",
-                chat_ref,
-                len(msgs),
-                max_seen,
-            )
+            except Exception:
+                # One bad chat (LLM error, fetch failure, etc.) must not abort
+                # the remaining chats in this run.
+                logger.exception("House chat %s failed", chat_ref)
+                lines.append(f"- {house_name}: ошибка при сборе сводки (см. логи), попробуем ещё раз в следующий запуск")
 
     return "\n".join(lines), total_new_messages, chat_stats
