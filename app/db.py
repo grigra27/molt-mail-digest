@@ -25,6 +25,14 @@ def init_db() -> None:
             v TEXT NOT NULL
         )
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS stats_daily (
+            date TEXT PRIMARY KEY,
+            total INTEGER NOT NULL DEFAULT 0,
+            other INTEGER NOT NULL DEFAULT 0,
+            claims TEXT NOT NULL DEFAULT '{}'
+        )
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -145,9 +153,44 @@ def add_daily_stats(timezone: str, total_delta: int, other_delta: int, claim_del
             "INSERT INTO kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
             ("daily_stats", json.dumps(stats, ensure_ascii=True)),
         )
+        conn.execute(
+            """
+            INSERT INTO stats_daily(date, total, other, claims) VALUES(?, ?, ?, ?)
+            ON CONFLICT(date) DO UPDATE SET
+                total=excluded.total,
+                other=excluded.other,
+                claims=excluded.claims
+            """,
+            (date_key, stats["total"], stats["other"], json.dumps(claims, ensure_ascii=True)),
+        )
         conn.commit()
     finally:
         conn.close()
+
+
+def get_stats_history() -> list[dict]:
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT date, total, other, claims FROM stats_daily ORDER BY date"
+        ).fetchall()
+    finally:
+        conn.close()
+    result = []
+    for r in rows:
+        try:
+            claims = json.loads(r["claims"])
+        except Exception:
+            claims = {}
+        if not isinstance(claims, dict):
+            claims = {}
+        result.append({
+            "date": r["date"],
+            "total": int(r["total"]),
+            "other": int(r["other"]),
+            "claims": {str(k): int(v) for k, v in claims.items()},
+        })
+    return result
 
 
 def get_today_daily_stats(timezone: str) -> dict:

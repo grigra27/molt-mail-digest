@@ -1,8 +1,13 @@
+import csv
+import io
+import json
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from config import Config
-from db import get_paused, set_paused, get_last_uid
+from db import get_paused, set_paused, get_last_uid, get_stats_history
 from digest import run_digest
 from telegram_jobs import (
     format_channel_stats,
@@ -170,6 +175,43 @@ async def cmd_house_chats_now(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
+async def cmd_stats_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    if not _is_allowed(update, cfg):
+        return
+
+    history = get_stats_history()
+    if not history:
+        await update.message.reply_text(
+            "Истории статистики пока нет — данные появляются после дайджестов.",
+            disable_web_page_preview=True,
+        )
+        return
+
+    # BOM so Excel opens Cyrillic correctly
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    writer.writerow(["date", "total", "other", "claims_total", "claims_json"])
+    for row in history:
+        claims_total = sum(row["claims"].values())
+        writer.writerow([
+            row["date"],
+            row["total"],
+            row["other"],
+            claims_total,
+            json.dumps(row["claims"], ensure_ascii=False),
+        ])
+
+    payload = ("\ufeff" + buf.getvalue()).encode("utf-8")
+    filename = f"stats_daily_{datetime.now(ZoneInfo(cfg.tz)).strftime('%Y%m%d')}.csv"
+
+    await update.message.reply_document(
+        document=io.BytesIO(payload),
+        filename=filename,
+        caption=f"Ежедневная статистика писем: {len(history)} дн., всего {sum(r['total'] for r in history)}",
+    )
+
+
 async def send_to_owner(app: Application, cfg: Config, text: str, parse_mode: str | None = None) -> None:
     for chunk in _split_telegram_message(text):
         await app.bot.send_message(
@@ -190,5 +232,6 @@ def build_app(cfg: Config) -> Application:
     application.add_handler(CommandHandler("digest_now", cmd_digest_now))
     application.add_handler(CommandHandler("jobs_spb_now", cmd_jobs_spb_now))
     application.add_handler(CommandHandler("house_chats_now", cmd_house_chats_now))
+    application.add_handler(CommandHandler("stats_csv", cmd_stats_csv))
 
     return application
