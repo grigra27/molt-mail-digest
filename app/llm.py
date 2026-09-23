@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Dict, List, Any
 from openai import OpenAI
+import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 
 def make_client(api_key: str, base_url: str) -> OpenAI:
@@ -115,99 +119,73 @@ Subject: {subject}
     return text.strip()
 
 
-def build_digest(
+def _parse_theme_groups(text: str, n_items: int) -> List[Dict[str, Any]]:
+    """
+    Parses LLM output into [{"theme": str, "items": [idx, ...]}, ...].
+    Falls back to a single "Разное" group covering any item the LLM
+    didn't place (or all items, if parsing fails outright) — no email
+    is ever silently dropped from the digest.
+    """
+    groups: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+
+    try:
+        cleaned = re.sub(r"```(?:json)?", "", text).strip()
+        m = re.search(r"\[.*\]", cleaned, re.S)
+        raw = json.loads(m.group(0) if m else cleaned)
+        for g in raw:
+            theme = str(g.get("theme", "")).strip() or "Разное"
+            idxs: List[int] = []
+            for i in g.get("items", []):
+                try:
+                    i = int(i)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= i < n_items and i not in seen:
+                    idxs.append(i)
+                    seen.add(i)
+            if idxs:
+                groups.append({"theme": theme, "items": idxs})
+    except Exception:
+        logger.exception("Failed to parse theme groups from LLM output")
+        groups = []
+        seen = set()
+
+    leftover = [i for i in range(n_items) if i not in seen]
+    if leftover:
+        groups.append({"theme": "Разное", "items": leftover})
+
+    return groups
+
+
+def group_other_items(
     client: OpenAI,
     model: str,
-    summary_text: str,
-    claim_groups: List[Dict],
     other_items: List[Dict],
-    failed: List[Dict],
     max_output_tokens: int,
-) -> str:
+) -> List[Dict[str, Any]]:
     """
-    Final digest:
-    - summary_text is computed by code (NO model-made counts)
-    - claims are listed deterministically by code
-    - OTHER is grouped by LLM into themes
-    - No Subject, no Action, no Top Themes
-    - Plain text
+    Groups non-claim emails into 3-8 themes. Formatting of the digest
+    itself is handled deterministically by the caller — this only
+    decides which theme each email belongs to.
     """
+    if not other_items:
+        return []
 
-    # Deterministic claims listing
-    claim_blocks: List[str] = []
-    for g in claim_groups:
-        claim_id = g["claim_id"]
-        lines: List[str] = []
-        for it in g["items"]:
-            # Required output line:
-            # - Name (domain): +++ СОДЕРЖАНИЕ: ...
-            lines.append(f"- {it['from_label']}: +++ СОДЕРЖАНИЕ: {it['content']}")
-        claim_blocks.append(f"[{claim_id}]\n" + "\n".join(lines))
-
-    claims_text = "\n\n".join(claim_blocks) if claim_blocks else "(нет данных)"
-
-    # Provide OTHER cards to LLM for thematic grouping
-    other_cards: List[str] = []
-    for it in other_items:
-        other_cards.append(f"- From: {it['from_label']}\n  Content: {it['content']}")
-
-    MAX_FAILED_IN_DIGEST = 20
-    failed_cards: List[str] = []
-    for it in failed[:MAX_FAILED_IN_DIGEST]:
-        subj = (it.get("subject") or "").strip()
-        if len(subj) > 120:
-            subj = subj[:120] + "…"
-        failed_cards.append(
-            f"- From: {it.get('from_label','unknown')}\n"
-            f"  Subject: {subj}\n"
-            f"  Reason: {it.get('reason','LLM error')}"
-        )
-    if len(failed) > MAX_FAILED_IN_DIGEST:
-        failed_cards.append(f"... и ещё {len(failed) - MAX_FAILED_IN_DIGEST} необработанных")
+    cards = [f"{idx}: {it['from_label']}: {it['content']}" for idx, it in enumerate(other_items)]
 
     prompt = f"""
-Сформируй Telegram-дайджест в виде ПРОСТОГО ТЕКСТА (PLAIN TEXT).
-КРИТИЧНО: НЕ используй markdown и спецсимволы форматирования (** * # _ `).
+Сгруппируй письма по темам (3–8 тематических групп) для дайджеста.
 
 КРИТИЧНО:
-- Блок "СВОДКА" уже посчитан кодом. Вставь его РОВНО как есть. Не меняй цифры и формулировки.
-- Блок "ЗАЯВКИ" уже подготовлен кодом. Вставь его РОВНО как есть. Не меняй и не переставляй строки.
-- Не добавляй Subject.
-- Не добавляй Action.
-- Не добавляй "ТОП ТЕМЫ".
+- Верни ТОЛЬКО JSON-массив, без markdown и пояснений.
+- Формат: [{{"theme": "Название темы", "items": [0, 2, 5]}}, ...]
+- "items" — индексы писем из списка ниже (0-based), каждый индекс должен встретиться ровно один раз.
+- Названия тем короткие (2–5 слов), по-русски, без нумерации.
+- Не выдумывай новые письма и не меняй индексы.
 
-Нужно:
-1) Вставить готовую СВОДКУ.
-2) Вставить готовые ЗАЯВКИ.
-3) Сформировать блок ПРОЧЕЕ: сгруппировать письма без заявок по 3–8 темам.
-   Внутри темы каждая строка строго:
-   - <From>: +++ СОДЕРЖАНИЕ: <Content>
-4) Блок НЕ ОБРАБОТАНО показывать только если есть ошибки.
-
-Формат итогового текста (строго):
-
-{summary_text}
-
-ЗАЯВКИ:
-{claims_text}
-
-ПРОЧЕЕ:
-[Тема 1]
-- <From>: +++ СОДЕРЖАНИЕ: <Content>
-- ...
-
-[Тема 2]
-- ...
-
-НЕ ОБРАБОТАНО:
-- From: ... : Subject ...
-(только если есть)
-
-Данные для ПРОЧЕЕ:
-{chr(10).join(other_cards) if other_cards else "(нет данных)"}
-
-Ошибки:
-{chr(10).join(failed_cards) if failed_cards else "(нет)"}
+Письма:
+{chr(10).join(cards)}
 """.strip()
 
     resp = client.responses.create(
@@ -217,10 +195,8 @@ def build_digest(
     )
 
     text = _extract_output_text(resp)
-    if not text:
-        raise RuntimeError(f"Empty digest ({_diag(resp)})")
+    return _parse_theme_groups(text, len(other_items))
 
-    return _sanitize_telegram_plain_text(text)
 
 def summarize_house_chat_messages(
     client: OpenAI,

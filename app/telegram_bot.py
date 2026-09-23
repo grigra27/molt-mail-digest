@@ -110,7 +110,7 @@ async def cmd_digest_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text, total, failed = run_digest(cfg)
         for chunk in _split_telegram_message(text):
-            await update.message.reply_text(chunk, disable_web_page_preview=True)
+            await update.message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
 
         await update.message.reply_text(
             f"Готово. Писем: {total}, не обработано: {failed}.",
@@ -170,11 +170,12 @@ async def cmd_house_chats_now(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
-async def send_to_owner(app: Application, cfg: Config, text: str) -> None:
+async def send_to_owner(app: Application, cfg: Config, text: str, parse_mode: str | None = None) -> None:
     for chunk in _split_telegram_message(text):
         await app.bot.send_message(
             chat_id=cfg.telegram_chat_id,
             text=chunk,
+            parse_mode=parse_mode,
             disable_web_page_preview=True,
         )
 

@@ -1,3 +1,4 @@
+import html
 import logging
 from typing import Dict, List, Tuple, Optional
 import re
@@ -16,7 +17,7 @@ from db import (
 from imap_client import ImapClient
 from email_parse import parse_email
 from cleaner import clean_email_text
-from llm import summarize_email, build_digest, make_client
+from llm import summarize_email, group_other_items, make_client
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,23 @@ def _format_from_label(name: str, email_addr: str) -> str:
     return email_addr or "unknown"
 
 
+def _format_from_html(name: str, domain: str) -> str:
+    name = (name or "").strip()
+    domain = (domain or "").strip()
+    if name and domain:
+        return f"<b>{html.escape(name)}</b> <i>({html.escape(domain)})</i>"
+    if name:
+        return f"<b>{html.escape(name)}</b>"
+    if domain:
+        return f"<b>{html.escape(domain)}</b>"
+    return "<b>unknown</b>"
+
+
+def _render_item_line(item: Dict) -> str:
+    who = _format_from_html(item.get("from_name", ""), item.get("from_domain", ""))
+    return f"• {who} — {html.escape(item['content'])}"
+
+
 def _extract_claim(subject: str) -> Optional[str]:
     subj = subject or ""
     m = CLAIM_RE.search(subj)
@@ -52,7 +70,7 @@ def _extract_claim(subject: str) -> Optional[str]:
     return m.group(1)
 
 
-def _build_summary_text(claim_groups: List[Dict], other_items: List[Dict], failed: List[Dict]) -> str:
+def _build_summary_lines(claim_groups: List[Dict], other_items: List[Dict], failed: List[Dict]) -> List[str]:
     claims_count = len(claim_groups)
     claim_emails_count = sum(len(g["items"]) for g in claim_groups)
     other_count = len(other_items)
@@ -69,7 +87,46 @@ def _build_summary_text(claim_groups: List[Dict], other_items: List[Dict], faile
     else:
         lines.append("- Новых писем нет")
 
-    return "СВОДКА:\n" + "\n".join(lines)
+    return lines
+
+
+def _render_digest(
+    claim_groups: List[Dict],
+    other_items: List[Dict],
+    other_groups: List[Dict],
+    failed: List[Dict],
+) -> str:
+    sections: List[str] = []
+
+    summary_lines = _build_summary_lines(claim_groups, other_items, failed)
+    sections.append("<b>СВОДКА</b>\n" + "\n".join(summary_lines))
+
+    if claim_groups:
+        blocks = []
+        for g in claim_groups:
+            header = f"<b>{html.escape(g['claim_id'])}</b>"
+            lines = [_render_item_line(it) for it in g["items"]]
+            blocks.append(header + "\n" + "\n".join(lines))
+        sections.append("<b>ЗАЯВКИ</b>\n\n" + "\n\n".join(blocks))
+
+    if other_groups:
+        blocks = []
+        for grp in other_groups:
+            header = f"<b>{html.escape(grp['theme'])}</b>"
+            lines = [_render_item_line(other_items[i]) for i in grp["items"]]
+            blocks.append(header + "\n" + "\n".join(lines))
+        sections.append("<b>ПРОЧЕЕ</b>\n\n" + "\n\n".join(blocks))
+
+    if failed:
+        lines = []
+        for it in failed:
+            who = _format_from_html(it.get("from_name", ""), it.get("from_domain", ""))
+            subj = html.escape(it.get("subject") or "")
+            reason = html.escape(it.get("reason") or "")
+            lines.append(f"• {who} — тема: {subj} · ошибка: {reason}")
+        sections.append("<b>НЕ ОБРАБОТАНО</b>\n" + "\n".join(lines))
+
+    return "\n\n".join(sections)
 
 
 def run_digest(cfg: Config) -> Tuple[str, int, int]:
@@ -98,7 +155,7 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
 
         uids = im.fetch_uids_since(last_uid, cfg.max_emails_per_run)
         if not uids:
-            return "СВОДКА:\n- Новых писем нет", 0, 0
+            return "<b>СВОДКА</b>\n- Новых писем нет", 0, 0
 
         max_uid_processed = last_uid
 
@@ -108,6 +165,8 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
 
             cleaned = clean_email_text(pe.body_text, cfg.max_chars_per_email)
 
+            from_name = (pe.from_name or "").strip()
+            from_domain = _email_domain(pe.from_email)
             from_label = _format_from_label(pe.from_name, pe.from_email)
             subject = pe.subject or ""
             claim_id = _extract_claim(subject)
@@ -128,6 +187,8 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
 
                 item = {
                     "uid": uid,
+                    "from_name": from_name,
+                    "from_domain": from_domain,
                     "from_label": from_label,
                     "subject": subject,  # keep only for failed/debug
                     "content": content_line,  # one-line content, no TL;DR/Action/Subject
@@ -144,7 +205,13 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
                 reason = str(e)
                 if len(reason) > 300:
                     reason = reason[:300] + "…"
-                failed.append({"from_label": from_label, "subject": subject, "reason": reason})
+                failed.append({
+                    "from_name": from_name,
+                    "from_domain": from_domain,
+                    "from_label": from_label,
+                    "subject": subject,
+                    "reason": reason,
+                })
 
             if uid > max_uid_processed:
                 max_uid_processed = uid
@@ -170,17 +237,14 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
     # Other items in chronological order
     other_items = sorted(other_items, key=lambda x: x["uid"])
 
-    summary_text = _build_summary_text(claim_groups, other_items, failed)
-
-    digest_text = build_digest(
+    other_groups = group_other_items(
         client=client,
         model=cfg.llm_model,
-        summary_text=summary_text,
-        claim_groups=claim_groups,
         other_items=other_items,
-        failed=failed,
         max_output_tokens=cfg.digest_max_output_tokens,
     )
+
+    digest_text = _render_digest(claim_groups, other_items, other_groups, failed)
 
     total = sum(len(g["items"]) for g in claim_groups) + len(other_items) + len(failed)
     return digest_text, total, len(failed)

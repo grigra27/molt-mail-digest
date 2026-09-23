@@ -73,7 +73,7 @@ async def main_async():
             return
         try:
             text, total, failed = run_digest(cfg)
-            await send_to_owner(app, cfg, text)
+            await send_to_owner(app, cfg, text, parse_mode="HTML")
             await send_to_owner(app, cfg, f"Авто-дайджест отправлен. Писем: {total}, не обработано: {failed}.")
             if run_hour == last_digest_hour:
                 await send_to_owner(app, cfg, build_daily_stats_text(cfg))
