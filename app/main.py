@@ -5,7 +5,7 @@ import re
 
 from config import load_config, Config
 from db import init_db, get_paused
-from telegram_bot import build_app, send_to_owner
+from telegram_bot import build_app, send_to_owner, register_bot_commands
 from telegram_jobs import format_channel_stats, run_spb_jobs_digest
 from scheduler import make_scheduler, add_digest_jobs
 from digest import run_digest, build_daily_stats_text
@@ -112,6 +112,7 @@ async def main_async():
     # Start bot (long polling)
     await app.initialize()
     await app.start()
+    await register_bot_commands(app)
     await app.updater.start_polling(drop_pending_updates=True)
 
     # Keep running

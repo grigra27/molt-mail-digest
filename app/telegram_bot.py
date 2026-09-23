@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from config import Config
 from db import get_paused, set_paused, get_last_uid, get_stats_history
@@ -220,6 +220,21 @@ async def send_to_owner(app: Application, cfg: Config, text: str, parse_mode: st
             parse_mode=parse_mode,
             disable_web_page_preview=True,
         )
+
+
+BOT_COMMANDS = [
+    BotCommand("status", "Текущее состояние дайджеста"),
+    BotCommand("digest_now", "Собрать и отправить дайджест сейчас"),
+    BotCommand("house_chats_now", "Сводка из домовых чатов"),
+    BotCommand("jobs_spb_now", "Вакансии СПб из Telegram-каналов"),
+    BotCommand("stats_csv", "Выгрузить ежедневную статистику писем (CSV)"),
+    BotCommand("pause", "Пауза авто-дайджестов"),
+    BotCommand("resume", "Снять паузу"),
+]
+
+
+async def register_bot_commands(app: Application) -> None:
+    await app.bot.set_my_commands(BOT_COMMANDS)
 
 
 def build_app(cfg: Config) -> Application:
