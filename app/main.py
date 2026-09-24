@@ -113,7 +113,7 @@ async def main_async():
     # Start bot (long polling)
     await app.initialize()
     await app.start()
-    await register_bot_commands(app)
+    await register_bot_commands(app, cfg)
     await app.updater.start_polling(drop_pending_updates=True)
 
     # Keep running

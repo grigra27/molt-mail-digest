@@ -4,7 +4,13 @@ import json
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from telegram import BotCommand, Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
+    Update,
+)
 from telegram.ext import Application, CommandHandler, ContextTypes
 from config import Config
 from db import get_paused, set_paused, get_last_uid, get_stats_history
@@ -223,25 +229,42 @@ async def send_to_owner(app: Application, cfg: Config, text: str, parse_mode: st
         )
 
 
+# Ordered by how often they are used — this is the order of the "Menu" list.
 BOT_COMMANDS = [
-    BotCommand("status", "Текущее состояние дайджеста"),
-    BotCommand("digest_now", "Собрать и отправить дайджест сейчас"),
-    BotCommand("house_chats_now", "Сводка из домовых чатов"),
-    BotCommand("jobs_spb_now", "Вакансии СПб из Telegram-каналов"),
-    BotCommand("stats_csv", "Выгрузить ежедневную статистику писем (CSV)"),
-    BotCommand("pause", "Пауза авто-дайджестов"),
-    BotCommand("resume", "Снять паузу"),
+    BotCommand("digest_now", "📬 Дайджест почты сейчас"),
+    BotCommand("house_chats_now", "🏠 Сводка домовых чатов"),
+    BotCommand("jobs_spb_now", "💼 Вакансии СПб из каналов"),
+    BotCommand("status", "ℹ️ Статус и расписание"),
+    BotCommand("stats_csv", "📊 Статистика писем (CSV)"),
+    BotCommand("pause", "⏸ Пауза авто-дайджестов"),
+    BotCommand("resume", "▶️ Снять паузу"),
+    BotCommand("help", "❓ Список команд"),
 ]
 
 
-async def register_bot_commands(app: Application) -> None:
-    await app.bot.set_my_commands(BOT_COMMANDS)
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    if not _is_allowed(update, cfg):
+        return
+    lines = ["Команды (также доступны через кнопку «Меню»):", ""]
+    lines += [f"/{c.command} — {c.description}" for c in BOT_COMMANDS]
+    await update.message.reply_text("\n".join(lines), disable_web_page_preview=True)
+
+
+async def register_bot_commands(app: Application, cfg: Config) -> None:
+    # Telegram shows the most specific scope's list, so stale lists left in broader
+    # scopes (e.g. set via BotFather for all private chats) would shadow ours.
+    # Clear them and publish the menu only to the owner chat.
+    await app.bot.delete_my_commands(scope=BotCommandScopeDefault())
+    await app.bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())
+    await app.bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeChat(cfg.telegram_chat_id))
 
 
 def build_app(cfg: Config) -> Application:
     application = Application.builder().token(cfg.telegram_bot_token).build()
     application.bot_data["cfg"] = cfg
 
+    application.add_handler(CommandHandler(["start", "help"], cmd_help))
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("pause", cmd_pause))
     application.add_handler(CommandHandler("resume", cmd_resume))
