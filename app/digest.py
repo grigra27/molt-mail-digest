@@ -70,7 +70,9 @@ def _extract_claim(subject: str) -> Optional[str]:
     return m.group(1)
 
 
-def _build_summary_lines(claim_groups: List[Dict], other_items: List[Dict], failed: List[Dict]) -> List[str]:
+def _build_summary_lines(
+    claim_groups: List[Dict], other_items: List[Dict], failed: List[Dict], pending: int
+) -> List[str]:
     claims_count = len(claim_groups)
     claim_emails_count = sum(len(g["items"]) for g in claim_groups)
     other_count = len(other_items)
@@ -87,6 +89,9 @@ def _build_summary_lines(claim_groups: List[Dict], other_items: List[Dict], fail
     else:
         lines.append("- Новых писем нет")
 
+    if pending:
+        lines.append(f"- Ещё в очереди: {pending} (попадут в следующий дайджест)")
+
     return lines
 
 
@@ -95,10 +100,11 @@ def _render_digest(
     other_items: List[Dict],
     other_groups: List[Dict],
     failed: List[Dict],
+    pending: int = 0,
 ) -> str:
     sections: List[str] = []
 
-    summary_lines = _build_summary_lines(claim_groups, other_items, failed)
+    summary_lines = _build_summary_lines(claim_groups, other_items, failed, pending)
     sections.append("<b>СВОДКА</b>\n" + "\n".join(summary_lines))
 
     if claim_groups:
@@ -159,7 +165,13 @@ def run_digest(cfg: Config) -> Tuple[str, int, int, Callable[[], None]]:
                 set_uidvalidity(uidvalidity)
             set_last_uid(new_last_uid)
 
-        uids = im.fetch_uids_since(last_uid, cfg.max_emails_per_run)
+        all_uids = im.fetch_uids_since(last_uid)
+        # Oldest first: the rest stays above last_uid and is picked up next run
+        # (taking the newest would advance last_uid past the skipped ones forever).
+        uids = all_uids[:cfg.max_emails_per_run]
+        pending = len(all_uids) - len(uids)
+        if pending:
+            logger.info("Backlog: processing %s emails, %s left for next run", len(uids), pending)
         if not uids:
             return "<b>СВОДКА</b>\n- Новых писем нет", 0, 0, lambda: commit_state(last_uid)
 
@@ -251,7 +263,7 @@ def run_digest(cfg: Config) -> Tuple[str, int, int, Callable[[], None]]:
         max_output_tokens=cfg.digest_max_output_tokens,
     )
 
-    digest_text = _render_digest(claim_groups, other_items, other_groups, failed)
+    digest_text = _render_digest(claim_groups, other_items, other_groups, failed, pending)
 
     total = sum(len(g["items"]) for g in claim_groups) + len(other_items) + len(failed)
     return digest_text, total, len(failed), commit

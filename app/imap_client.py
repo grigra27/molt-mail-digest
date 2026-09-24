@@ -41,7 +41,7 @@ class ImapClient:
             return data2[0].decode(errors="ignore")
         return ""
 
-    def fetch_uids_since(self, last_uid: int, max_results: int) -> List[int]:
+    def fetch_uids_since(self, last_uid: int) -> List[int]:
         # Search by UID range
         criteria = f"(UID {last_uid + 1}:*)"
         typ, data = self.imap.uid("SEARCH", None, criteria)
@@ -53,11 +53,7 @@ class ImapClient:
 
         # "N:*" always matches the highest UID even when it is < N (RFC 3501),
         # so without this filter the last seen message comes back every run.
-        uids = [u for u in (int(x) for x in data[0].split()) if u > last_uid]
-        # Take newest last (keep order increasing)
-        if len(uids) > max_results:
-            uids = uids[-max_results:]
-        return uids
+        return sorted(u for u in (int(x) for x in data[0].split()) if u > last_uid)
 
     def fetch_rfc822(self, uid: int) -> bytes:
         typ, data = self.imap.uid("FETCH", str(uid), "(RFC822)")
