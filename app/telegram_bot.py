@@ -113,9 +113,10 @@ async def cmd_digest_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Делаю дайджест…", disable_web_page_preview=True)
     try:
-        text, total, failed = run_digest(cfg)
+        text, total, failed, commit = run_digest(cfg)
         for chunk in _split_telegram_message(text):
             await update.message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
+        commit()
 
         await update.message.reply_text(
             f"Готово. Писем: {total}, не обработано: {failed}.",

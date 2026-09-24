@@ -1,6 +1,6 @@
 import html
 import logging
-from typing import Dict, List, Tuple, Optional
+from typing import Callable, Dict, List, Tuple, Optional
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -129,9 +129,13 @@ def _render_digest(
     return "\n\n".join(sections)
 
 
-def run_digest(cfg: Config) -> Tuple[str, int, int]:
+def run_digest(cfg: Config) -> Tuple[str, int, int, Callable[[], None]]:
     """
-    Returns: (digest_text, emails_count, failed_count)
+    Returns: (digest_text, emails_count, failed_count, commit)
+
+    Nothing is persisted here: the caller must invoke commit() only after
+    the digest has actually been delivered, otherwise a failed send would
+    mark the emails as processed and they would never be shown.
     """
     client = make_client(cfg.llm_api_key, cfg.llm_base_url)
 
@@ -150,12 +154,14 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
             logger.warning("UIDVALIDITY changed (%s -> %s). Resetting last_uid.", old_uidvalidity, uidvalidity)
             last_uid = 0
 
-        if uidvalidity:
-            set_uidvalidity(uidvalidity)
+        def commit_state(new_last_uid: int) -> None:
+            if uidvalidity:
+                set_uidvalidity(uidvalidity)
+            set_last_uid(new_last_uid)
 
         uids = im.fetch_uids_since(last_uid, cfg.max_emails_per_run)
         if not uids:
-            return "<b>СВОДКА</b>\n- Новых писем нет", 0, 0
+            return "<b>СВОДКА</b>\n- Новых писем нет", 0, 0, lambda: commit_state(last_uid)
 
         max_uid_processed = last_uid
 
@@ -216,8 +222,9 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
             if uid > max_uid_processed:
                 max_uid_processed = uid
 
-        # MVP choice: even if LLM fails, we still advance (no reprocessing)
-        set_last_uid(max_uid_processed)
+    # MVP choice: even if LLM fails for an email, we still advance (no reprocessing)
+    def commit() -> None:
+        commit_state(max_uid_processed)
         add_daily_stats(
             timezone=cfg.tz,
             total_delta=len(uids),
@@ -247,7 +254,7 @@ def run_digest(cfg: Config) -> Tuple[str, int, int]:
     digest_text = _render_digest(claim_groups, other_items, other_groups, failed)
 
     total = sum(len(g["items"]) for g in claim_groups) + len(other_items) + len(failed)
-    return digest_text, total, len(failed)
+    return digest_text, total, len(failed), commit
 
 
 def build_daily_stats_text(cfg: Config) -> str:

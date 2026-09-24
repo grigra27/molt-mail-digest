@@ -72,8 +72,9 @@ async def main_async():
             logging.getLogger(__name__).info("Paused; skipping scheduled digest.")
             return
         try:
-            text, total, failed = run_digest(cfg)
+            text, total, failed, commit = run_digest(cfg)
             await send_to_owner(app, cfg, text, parse_mode="HTML")
+            commit()
             await send_to_owner(app, cfg, f"Авто-дайджест отправлен. Писем: {total}, не обработано: {failed}.")
             if run_hour == last_digest_hour:
                 await send_to_owner(app, cfg, build_daily_stats_text(cfg))

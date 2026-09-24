@@ -51,7 +51,9 @@ class ImapClient:
         if not data or not data[0]:
             return []
 
-        uids = [int(x) for x in data[0].split()]
+        # "N:*" always matches the highest UID even when it is < N (RFC 3501),
+        # so without this filter the last seen message comes back every run.
+        uids = [u for u in (int(x) for x in data[0].split()) if u > last_uid]
         # Take newest last (keep order increasing)
         if len(uids) > max_results:
             uids = uids[-max_results:]
